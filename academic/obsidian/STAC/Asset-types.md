@@ -1,0 +1,14 @@
+- Transparent_mosaic
+	- .tif
+	- .prj
+	- .tfw
+	- nötig? Ja als assets
+- DSM
+- (DSM_shd)
+- DSM_masked
+	- masked means houses are redacted
+- (DSM_masked_shd)
+- DTM_filled
+- (DTM_filled_shd)
+- DTM_masked
+- (DTM_masked_shd)

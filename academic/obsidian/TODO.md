@@ -1,0 +1,13 @@
+- Python4Geo aufgabe machen ✓
+- Sample-Katalog machen mit Testdatensätzen
+	- STAC-Struktur entscheiden ✓
+- Sebastian/David suchen und ihn ausfragen, bzw exposé zeigen ✓
+	- shd nicht katalogisieren
+	- neue struktur gefunden
+	- tiles sicher, aber alle in eine collection
+---
+- [[Extensions]] klären
+- [[pre-processing]] ausführen
+	- Skriptbasis tile_and_convert.py schreiben und testen
+	- Orthophotos -> tiling -> COG
+	- klären ab wann tiling notwendig wird
