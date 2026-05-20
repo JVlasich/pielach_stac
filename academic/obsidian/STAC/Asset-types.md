@@ -2,7 +2,7 @@
 	- .tif
 	- .prj
 	- .tfw
-	- nötig? Ja als assets
+	- nötig? Ja als assets. Sidecar files
 - DSM
 - (DSM_shd)
 - DSM_masked

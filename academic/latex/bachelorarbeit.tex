@@ -1,0 +1,135 @@
+% !TEX program = pdflatex
+\documentclass[12pt, a4paper, bibliography=totoc, listof=totoc]{scrreprt}
+
+% --- Sprache & Encoding ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[ngerman]{babel}
+\usepackage{csquotes}
+
+% --- Layout ---
+\usepackage[left=3cm, right=2.5cm, top=2.5cm, bottom=2.5cm]{geometry}
+
+% --- Literatur ---
+\usepackage[backend=biber, style=authoryear]{biblatex}
+\addbibresource{literatur.bib}
+
+% --- Hyperlinks ---
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue
+}
+
+% --- Metadaten (Platzhalter) ---
+\newcommand{\thesistitle}{Titel der Bachelorarbeit}
+\newcommand{\authorname}{Vorname Nachname}
+\newcommand{\matrikelnr}{Matrikelnummer}
+\newcommand{\university}{Universität / Fachhochschule}
+\newcommand{\faculty}{Fakultät / Studiengang}
+\newcommand{\supervisor}{Betreuer/in: Prof.\ Dr.\ Vorname Nachname}
+\newcommand{\secondreviewer}{Zweitgutachter/in: Prof.\ Dr.\ Vorname Nachname}
+\newcommand{\submissiondate}{\today}
+
+% ============================================================
+\begin{document}
+
+% --- Titelseite ---
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    {\Large \university \par}
+    \vspace{0.5cm}
+    {\large \faculty \par}
+    \vspace{3cm}
+    {\LARGE \textbf{\thesistitle} \par}
+    \vspace{2cm}
+    {\large Bachelorarbeit \par}
+    \vspace{1cm}
+    {\large vorgelegt von \par}
+    \vspace{0.5cm}
+    {\Large \authorname \par}
+    {\normalsize Matrikelnr.: \matrikelnr \par}
+    \vfill
+    {\normalsize \supervisor \par}
+    {\normalsize \secondreviewer \par}
+    \vspace{1cm}
+    {\normalsize \submissiondate \par}
+\end{titlepage}
+
+% --- Zusammenfassung ---
+\chapter*{Zusammenfassung}
+\addcontentsline{toc}{chapter}{Zusammenfassung}
+
+% TODO: Zusammenfassung hier einfügen
+
+% --- Inhaltsverzeichnis ---
+\tableofcontents
+\newpage
+
+% ============================================================
+% Hauptteil
+% ============================================================
+
+% Kapitel 0
+\setcounter{chapter}{-1}
+\chapter{Präambel: Zeitserie Pielach}
+
+% Kapitel 1
+\chapter{Einleitung}
+
+% Kapitel 2
+\chapter{Grundlagen und Stand der Technik}
+\section{\textit{Cloud-Native-Geospatial} (COG, COPC und HTTP-Range-Requests)}
+\section{Metadatenstandards: Von ISO~19115 zu STAC}
+\section{Abgrenzung zum \textit{Data-Cube}-Paradigma}
+\section{Verwandte Arbeiten und Werkzeuge}
+
+% Kapitel 3
+\chapter{Technische Ausgangslage der Rohdaten}
+\section{Analyse der Verzeichnisstruktur und Dateiformate}
+\section{Metadaten-Inkonsistenzen und programmatische Herausforderungen}
+
+% Kapitel 4
+\chapter{Konzeption der STAC-Architektur}
+\section{Strukturierung der Katalog-Hierarchie}
+\section{Evaluierung der \textit{Linking}-Strategie}
+\section{Erweiterbarkeit und Idempotenz der Pipeline}
+\section{Architektur der Abfrage- und \textit{Subsetting}-Komponente}
+
+% Kapitel 5
+\chapter{Implementierung}
+\section{Datenaufbereitung und Überführung in \textit{Cloud-Native}-Formate}
+\section{Generierungspipeline (Metadatenextraktion, konfigurierbare \textit{Asset-Registry})}
+\section{Validierung (STAC-Konformität und inhaltliche Plausibilität)}
+\section{Domänenspezifische Abfragen und \textit{Subsetting}}
+
+% Kapitel 6
+\chapter{Ergebnisse und Evaluierung}
+\section{Präsentation des generierten STAC-Katalogs}
+\section{Domänenspezifische raumzeitliche Abfragen und \textit{Subsetting}}
+\section{Bewertung der Generalisierbarkeit der Pipeline}
+
+% Kapitel 7
+\chapter{Diskussion}
+\section{Architekturentscheidungen: Begründung und Übertragbarkeit}
+\section{Grenzen der Generalisierbarkeit und Konfigurierbarkeit}
+\section{Mehrwert gegenüber verzeichnisorientierter Ablage und FAIR-Bezug}
+
+% Kapitel 8
+\chapter{Fazit und Ausblick}
+
+% ============================================================
+% Literaturverzeichnis
+% ============================================================
+\printbibliography
+
+% ============================================================
+% Anhang (optional)
+% ============================================================
+% \appendix
+% \chapter{Anhang}
+
+\end{document}

@@ -29,7 +29,7 @@ DEFAULTS = {
     "nbThreads": 1,
     "distribute": 1,
     "tmp_path": "./tmp",
-    "copcindex_path": "./lascopcindex64.exe",
+    "copcindex_path": "./bin/lascopcindex64.exe",
     "pointOrigin": "529000;5340000",
     "tileSize": 500,
     "keepodm": False,

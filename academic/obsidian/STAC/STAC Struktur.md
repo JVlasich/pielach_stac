@@ -10,6 +10,25 @@
 	- pielach-orthophoto
 		- item (date)
 			- Asset (mosaic .tif ext: eo, projection)
+---
+Catalog: pielach (root)
+├── Collection: pielach-dsm
+│   └── Item (per tile / per acquisition)
+│       ├── Asset "dsm_filled"  roles: ["data", "dem"]
+│       └── Asset "dsm_mask"    roles: ["metadata", "mask"]
+├── Collection: pielach-dtm
+│   └── Item
+│       ├── Asset "dtm_filled"  roles: ["data", "dem"]
+│       └── Asset "dtm_mask"    roles: ["metadata", "mask"]
+├── Collection: pielach-pointcloud
+│   └── Item (tile)
+│       └── Asset (COPC, roles: ["data"])
+└── Collection: pielach-orthophoto
+    └── Item (date)
+        └── Asset (mosaic .tif, roles: ["data", "visual"])
+
+---
+
 
 - Catalog
 	- Collection (All Data)
