@@ -3,6 +3,9 @@ academic/obsidian/nogit/
 academic/obsidian/daily_notes/
 academic/obsidian/.obsidian/
 .claude
+.vscode
 bachelor.code-workspace
 env/
 *.yaml
+src/__pycache__
+academic/

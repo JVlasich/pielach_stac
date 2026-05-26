@@ -1,4 +1,5 @@
 """
+Tile and Convert Pointcloud:
 Tiles a LAZ file using OPALS and converts tiles to COPC format.
 
 Usage:
