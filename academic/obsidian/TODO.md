@@ -2,25 +2,24 @@
 ---
 - [x] [[STAC Struktur]] 1.1 komplett lesen
 - [x] [[Extensions]] durcharbeiten
-- [ ] [[PyStack]]-Doku lesen, mini besipielkatalog machen
+- [x] [[PyStack]]-Doku lesen, mini besipielkatalog machen
 - [x] Rieg et al. (2014) lesen, notizen machen
-- [ ] FAIR-Prinzipien-Paper durchgehen, Mapping zu STAC-Features notieren, auch für eigene Arbeit anwenden
 - [x] Notieren welche Metadatenfelder pro [[Asset-types]] tatsächlich gebraucht werden (Footprint, Zeit, CRS, Punktdichte, Bänder usw.)
-- [ ] Vergleichbare STAC-Kataloge durchgehen und Struktur notieren ([[Related-Catalogs]])
+- [x] Vergleichbare STAC-Kataloge durchgehen und Struktur notieren ([[Related-Catalogs]])
 - [x] LaTex aufsetzen, Reference Manager einrichten
+- [ ] FAIR-Prinzipien-Paper durchgehen, Mapping zu STAC-Features notieren, auch für eigene Arbeit anwenden
 # Phase 2 - mapping
 ---
-- [ ] Kompletten Verzeichnissbaum durchgehen, Struktur dokumentieren
-- [ ] Datentypen und Formate notieren [[Asset-types]]
-- [ ] Namenskonvention erfassen (üblich, opals-default, inkonsistent)
+- [x] Kompletten Verzeichnissbaum durchgehen, Struktur dokumentieren
+- [x] Datentypen und Formate notieren [[Asset-types]]
+- [x] Namenskonvention erfassen (üblich, opals-default, inkonsistent)
 - [ ] Stichprobenhaltig crs, extent, auflösung für einzelne Dateien notieren
-- [ ] Was macht 2023 zum besten jahr?
 # Phase 3 - pre-processing
 ---
 siehe auch [[pre-processing]]
-- [ ] Skript: Raster → COG (mit GDAL, validieren mit `rio cogeo validate` o. ä.)
+- [x] Skript: Raster → COG (mit GDAL, validieren mit `rio cogeo validate` o. ä.)
 - [ ] Punktwolken-Strategie festlegen: kacheln ja/nein, Tile-Größe, Overlap
-- [ ] Skript: LAZ → COPC (PDAL)
+- [x] Skript: LAZ → COPC
 - [ ] idempotenz gewährleisten
 # Phase 4 - Architektur
 ---

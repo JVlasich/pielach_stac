@@ -1,14 +1,16 @@
+- Pointclouds
 - Transparent_mosaic
 	- .tif
 	- .prj
 	- .tfw
-	- nötig? Ja als assets. Sidecar files
 - DSM
-- (DSM_shd)
 - DSM_masked
 	- masked means houses are redacted
-- (DSM_masked_shd)
+- DSM_filled
+	- filled means interpolations between nodata
 - DTM_filled
-- (DTM_filled_shd)
 - DTM_masked
+- (DTM_filled_shd)
 - (DTM_masked_shd)
+- (DSM_masked_shd)
+- (DSM_shd)

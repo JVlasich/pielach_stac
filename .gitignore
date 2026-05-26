@@ -5,3 +5,4 @@ academic/obsidian/.obsidian/
 .claude
 bachelor.code-workspace
 env/
+*.yaml

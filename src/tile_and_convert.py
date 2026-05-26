@@ -89,9 +89,7 @@ def load_config(config_path: Path) -> dict:
     if data is None:
         return {}
     if not isinstance(data, dict):
-        print(f"Error: config file {config_path} must contain a YAML mapping, not {type(data).__name__}",
-              file=sys.stderr)
-        sys.exit(1)
+        raise TypeError(f"Error: config file {config_path} must contain a YAML mapping, not {type(data).__name__}")
     valid_keys = set(DEFAULTS.keys())
     for key in data:
         if key not in valid_keys:
@@ -196,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--config", type=str, default=None,
                         help="Path to YAML configuration file")
-    parser.add_argument("--init", type=str, nargs="?", const="config.yaml", default=None,
+    parser.add_argument("--init", type=str, nargs="?", const="config.yaml", default=None, # "?" means 0 or 1 args
                         metavar="FILENAME",
                         help="Generate template config YAML and exit (default: config.yaml)")
 
@@ -238,16 +236,14 @@ if __name__ == "__main__":
     if cli_args.config is not None:
         config_path = Path(cli_args.config)
         if not config_path.is_file():
-            print(f"Error: config file not found: {config_path}", file=sys.stderr)
-            sys.exit(1)
+            raise FileNotFoundError(f"Config file not found: {config_path}")
         config = load_config(config_path)
 
     # Merge: CLI > config > defaults
     cfg = merge_config(cli_args, config)
 
     if cfg["infile"] is None:
-        print("Error: --infile is required (via CLI or config file).", file=sys.stderr)
-        sys.exit(1)
+        raise Exception("--infile is required (via CLI or config file)")
 
     infile = Path(cfg["infile"])
     tmp_path = Path(cfg["tmp_path"])
@@ -265,11 +261,9 @@ if __name__ == "__main__":
     tile_tmp.mkdir(parents=True, exist_ok=True)
 
     if not infile.is_file():
-        print(f"Error: input file not found: {infile}", file=sys.stderr)
-        sys.exit(1)
+        raise FileNotFoundError(f"Input file not found: {infile}")
     if not copcindex_path.is_file():
-        print(f"Error: lascopcindex not found: {copcindex_path}", file=sys.stderr)
-        sys.exit(1)
+        raise FileNotFoundError(f"Error: lascopcindex not found: {copcindex_path}")
 
     # OPALS Logger always writes XML logs to CWD — redirect to tmp
     original_cwd = Path.cwd()
