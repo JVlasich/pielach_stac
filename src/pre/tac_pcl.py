@@ -29,6 +29,7 @@ DEFAULTS = {
     "outdir": None,
     "nbThreads": 1,
     "distribute": 1,
+    "tileSize_odm": 24.0,
     "tmp_path": "./tmp",
     "copcindex_path": "./bin/lascopcindex64.exe",
     "pointOrigin": "529000;5340000",
@@ -38,7 +39,7 @@ DEFAULTS = {
 }
 
 
-def import_laz_file(infile: Path, tmp_path: Path, nbThreads: int):
+def import_laz_file(infile: Path, tmp_path: Path, nbThreads: int, tileSize_odm: float):
     odm_path = tmp_path / infile.with_suffix(".odm").name
     if odm_path.exists():
         return None
@@ -47,6 +48,7 @@ def import_laz_file(infile: Path, tmp_path: Path, nbThreads: int):
     imp.inFile = str(infile)
     imp.commons.nbThreads = nbThreads
     imp.outFile = str(odm_path)
+    imp.tileSize = tileSize_odm
     imp.run()
     return imp
 
@@ -59,7 +61,7 @@ def pretile(header, tmp_path: Path, nbThreads: int, pointOrigin: str, tileSize: 
     pret.tileSize = tileSize
     pret.pointOrigin = pointOrigin
     pret.nbThreads = nbThreads
-    pret.fileLogLevel = Types.LogLevel.error
+    pret.fileLogLevel = Types.LogLevel.none
     pret.screenLogLevel = Types.LogLevel.error
     pret.export = str(tmp_path)
     pret.run() # type: ignore
@@ -106,6 +108,7 @@ def generate_template_config(output_path: Path):
 
         # infile:                               # Required: input LAZ file
         # outdir:                               # Output directory (default: <infile_stem>_tiles)
+        # tileSize_odm: 24.0                        # Tile size for the opalsImport
         # nbThreads: 1                          # Number of processing threads
         # distribute: 1                         # OPALS distribution factor
         # tmp_path: ./tmp                       # Temporary working directory
@@ -219,6 +222,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"Keep intermediate ODM files (default: {DEFAULTS['keepodm']})")
     parser.add_argument("--buffer", type=int, default=None,
                         help=f"Buffer around tiles in map units (default: {DEFAULTS['buffer']})")
+    parser.add_argument("--tileSize_odm", type=float, default=None,
+                        help=f"Buffer around tiles in map units (default: {DEFAULTS['tileSize_odm']})")
 
     return parser
 
@@ -273,7 +278,7 @@ if __name__ == "__main__":
     try:
         # Import to ODM
         print(f"Importing {infile.name} to ODM...")
-        import_laz_file(infile, tmp_path, cfg["nbThreads"])
+        import_laz_file(infile, tmp_path, cfg["nbThreads"], cfg["tileSize_odm"])
         odm_path = tmp_path / infile.with_suffix(".odm").name
         header = pyDM.Datamanager.getHeaderODM(str(odm_path))
 
