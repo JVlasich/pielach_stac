@@ -1,0 +1,23 @@
+# Configuration template. All values shown are defaults.
+# Uncomment and modify as needed. CLI args override values set here.
+
+commons:
+  # nbThreads: 1
+  # distribute: 1
+  # tmp_path: ./tmp
+  # fileLogLevel: error
+  # screenLogLevel: error
+  # keeptmp: false
+
+tile_and_convert_pcl:
+  # infile: null
+  # outdir: null
+  # nbThreads: 1
+  # distribute: 1
+  # tileSize_odm: 24.0
+  # tmp_path: ./tmp
+  # pointOrigin: null
+  # tileSize: 500
+  # keepodm: true
+  # buffer: 0
+  # keeptmp: null
