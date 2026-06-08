@@ -4,6 +4,7 @@ env/
 .vscode/
 **/__pycache__
 **/.claude
+*CLAUDE.md
 
 bachelor.code-workspace
 *.yaml

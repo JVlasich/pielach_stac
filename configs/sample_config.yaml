@@ -21,3 +21,15 @@ tile_and_convert_pcl:
   # keepodm: true
   # buffer: 0
   # keeptmp: null
+
+tac_raster:
+  # infile: null
+  # outdir: null
+  # minTileSize: null
+  # tileSize: 16384
+  # skipIfExists: true
+  # compress: DEFLATE
+  # blockSize: 512
+  # overviews: AUTO
+  # nbThreads: ALL_CPUS
+  # bigTiff: IF_SAFER

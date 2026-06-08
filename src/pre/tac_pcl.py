@@ -6,7 +6,7 @@ Usage:
     python tile_and_convert.py --infile file.laz [--config config.yaml] [--outdir dir]
     python tile_and_convert.py --init [config.yaml]
 
-Requires: pyyaml, opals
+Requires: opals
 """
 
 import argparse
@@ -21,6 +21,8 @@ from ..utils import io
 import opals
 from opals import Import, Types, pyDM
 from opals.workflows import preTiling, preCutting # concidering _import
+
+def prCyan(s): print("\033[96m {}\033[00m".format(s))
 
 _BIN = Path(__file__).resolve().parents[1] / "bin"   # src/pre/<mod> -> src/bin
 _COPCINDEX = "lascopcindex64" + (".exe" if os.name == "nt" else "") # linux inclusive :) not tested tho
@@ -126,6 +128,29 @@ def convert_to_copc(laz_files: list, tile_tmp: Path, odir: Path):
     lof_path.unlink(missing_ok=True)
 
 
+def resolve_inputs(raw) -> list:
+    """Expand a path or list of paths/dirs into a deduped list of .laz files."""
+    entries = [raw] if isinstance(raw, str) else list(raw)
+    resolved = []
+    seen = set()
+    for entry in entries:
+        p = Path(entry).resolve()
+        if p.is_dir():
+            laz = [f for f in sorted(p.glob("*.laz")) if not f.name.endswith(".copc.laz")]
+        elif p.exists():
+            laz = [p]
+        else:
+            raise FileNotFoundError(f"Input path not found: {p}")
+        for f in laz:
+            if f not in seen:
+                seen.add(f)
+                resolved.append(f)
+
+    if not resolved:
+        raise Exception(f"No .laz inputs resolved from --infile {entries}")
+    return resolved
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Tile a LAZ file and convert tiles to COPC format.",
@@ -156,10 +181,12 @@ def build_parser() -> argparse.ArgumentParser:
                         metavar="FILENAME",
                         help="Generate template config YAML and exit (default: config.yaml)")
 
-    tac.add_argument("--infile", type=str, default=None,
-                        help="Input LAZ file path")
+    tac.add_argument("--infile", type=str, nargs="+", default=None,
+                        help="Input LAZ file(s) and/or directories")
     tac.add_argument("--outdir", type=str, default=None,
-                        help="Output directory for COPC tiles (default: <infile_stem>_tiles)")
+                        help="Output directory for COPC tiles. Single input: exact dir. "
+                             "Multiple inputs: parent root, each input goes to <outdir>/<stem>_tiles. "
+                             "(default: <infile_stem>_tiles beside each input)")
     
     tac.add_argument("--pointOrigin", type=str, default=None,
                         help=f"Tile origin coordinates (default: {DEFAULTS['pointOrigin']})")
@@ -174,6 +201,42 @@ def build_parser() -> argparse.ArgumentParser:
     
 
     return parser
+
+
+def process_one(infile: Path, cfg: dict, outdir: Path, tmp_root: Path) -> Path:
+    """Run the full tile+convert pipeline for one input. Returns the produced ODM path."""
+    work = tmp_root / infile.stem          # per-input work dir isolates odm, grid and tiles
+    tile_tmp = work / "tiles"
+    outdir.mkdir(parents=True, exist_ok=True)
+    tile_tmp.mkdir(parents=True, exist_ok=True)
+
+    if not infile.is_file():
+        raise FileNotFoundError(f"Input file not found: {infile}")
+
+    # OPALS Logger always writes XML logs to CWD — redirect to work dir
+    original_cwd = Path.cwd()
+    os.chdir(str(work))
+    try:
+        # Import to ODM
+        print(f"Importing {infile.name} to ODM...")
+        import_laz_file(infile, work, cfg["nbThreads"], cfg["tileSize_odm"])
+        odm_path = work / infile.with_suffix(".odm").name
+        header = pyDM.Datamanager.getHeaderODM(str(odm_path))
+
+        # Create tile grid
+        print("Creating tile grid...")
+        pretile(header, work, cfg["nbThreads"], cfg["pointOrigin"], cfg["tileSize"])
+
+        # Cut tiles — LAZ goes to tile_tmp, not outdir
+        print("Cutting tiles...")
+        precut(infile, cfg["buffer"], tile_tmp, cfg["nbThreads"], cfg["distribute"], work)
+    finally:
+        os.chdir(str(original_cwd))
+
+    # COPC conversion — skip files already in outdir
+    laz_to_convert = find_laz_needing_conversion(tile_tmp, outdir)
+    convert_to_copc(laz_to_convert, tile_tmp, outdir)
+    return odm_path
 
 
 def main():
@@ -219,56 +282,39 @@ def main():
     if cfg["infile"] is None:
         raise Exception("--infile is required (via CLI or config file)")
 
-    infile = Path(cfg["infile"]).resolve()
+    inputs = resolve_inputs(cfg["infile"])
     tmp_path = Path(cfg["tmp_path"]).resolve()
-    # copcindex_path = Path(cfg["copcindex_path"]).resolve()
-
-    if cfg["outdir"] is None:
-        outdir = Path(str(infile.with_suffix("")) + "_tiles")
-    else:
-        outdir = Path(cfg["outdir"]).resolve()
-
-    tile_tmp = tmp_path / "tiles"
-
-    outdir.mkdir(parents=True, exist_ok=True)
     tmp_path.mkdir(parents=True, exist_ok=True)
-    tile_tmp.mkdir(parents=True, exist_ok=True)
 
-    if not infile.is_file():
-        raise FileNotFoundError(f"Input file not found: {infile}")
+    explicit_outdir = Path(cfg["outdir"]).resolve() if cfg["outdir"] else None
 
-    # OPALS Logger always writes XML logs to CWD — redirect to tmp
-    original_cwd = Path.cwd()
-    os.chdir(str(tmp_path))
+    def outdir_for(infile: Path) -> Path:
+        if explicit_outdir is None:                 # default: beside each input
+            return Path(str(infile.with_suffix("")) + "_tiles")
+        if len(inputs) == 1:                        # single input: exact dir (back-compat)
+            return explicit_outdir
+        return explicit_outdir / (infile.stem + "_tiles")  # multi: parent root
 
-    try:
-        # Import to ODM
-        print(f"Importing {infile.name} to ODM...")
-        import_laz_file(infile, tmp_path, cfg["nbThreads"], cfg["tileSize_odm"])
-        odm_path = tmp_path / infile.with_suffix(".odm").name
-        header = pyDM.Datamanager.getHeaderODM(str(odm_path))
+    results = []          # (name, "ok" | error message)
+    produced_odms = []
 
-        # Create tile grid
-        print("Creating tile grid...")
-        pretile(header, tmp_path, cfg["nbThreads"], cfg["pointOrigin"], cfg["tileSize"])
+    for idx, infile in enumerate(inputs, 1):
+        prCyan(f"\n=== {infile.name} ({idx}/{len(inputs)}) ===")
+        try:
+            odm_path = process_one(infile, cfg, outdir_for(infile), tmp_path)
+            produced_odms.append(odm_path)
+            results.append((infile.name, "ok"))
+        except Exception as e:
+            print(f"FAILED: {infile.name}: {e}", file=sys.stderr)
+            results.append((infile.name, str(e)))
 
-        # Cut tiles — LAZ goes to tile_tmp, not outdir
-        print("Cutting tiles...")
-        precut(infile, cfg["buffer"], tile_tmp, cfg["nbThreads"], cfg["distribute"], tmp_path)
-    finally:
-        os.chdir(str(original_cwd))
-
-    # COPC conversion — skip files already in outdir
-    laz_to_convert = find_laz_needing_conversion(tile_tmp, outdir)
-    convert_to_copc(laz_to_convert, tile_tmp, outdir)
-
-    # Cleanup
-    if cfg.get("keeptmp") or cfg.get("keepodm"):
-        if cfg.get("keeptmp"):  # implies keepodm
-            print("Keeping all temporary files.")
-        elif cfg.get("keepodm"):
-            print("Cleaning temporary files but keeping ODM.")
-            io.clean_dir(str(tmp_path), [odm_path.name])
+    # Cleanup once at batch end
+    if cfg.get("keeptmp"):
+        print("Keeping all temporary files.")
+    elif cfg.get("keepodm"):
+        print("Cleaning temporary files but keeping ODM.")
+        for odm in produced_odms:
+            io.clean_dir(str(odm.parent), [odm.name])
     else:
         print("Cleaning all temporary files.")
         io.clean_dir(str(tmp_path), [])
@@ -276,7 +322,14 @@ def main():
     if os.name == "nt":  # Windows beep on completion
         import winsound
         winsound.MessageBeep()
-    print("Done.")
+
+    # Summary
+    failed = [(n, m) for n, m in results if m != "ok"]
+    print(f"\nDone. {len(results) - len(failed)} ok, {len(failed)} failed.")
+    for name, msg in failed:
+        print(f"  {name}: {msg}")
+    if failed:
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
