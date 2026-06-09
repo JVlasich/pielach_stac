@@ -1,0 +1,1 @@
+"""placement resolver (auto + manual hierarchy block)"""
