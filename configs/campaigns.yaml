@@ -1,10 +1,68 @@
-root_dir: &ROOT P:/Studies/13_Pielach/
+# productPaths are folders relative to root_dir
+# valid statuses: processed | pending
+
+root_dir: P:/Studies/13_Pielach/
 
 campaigns:
+  2014-02-21:
+    title: Pielach 2014-02-21 (winter)
+    description: Winter-series airborne topo-bathymetric LiDAR, VQ-820-G. First processed deliverable.
+    sensor: VQ-820-G
+    site: pielach
+    status: processed
+    productPaths:
+      - 12_PROCESSED_DATASETS/2014-02-21
+
+  2015-03-20:
+    title: Pielach 2015-03-20
+    description: Airborne topo-bathymetric LiDAR, VQ-880-G.
+    sensor: VQ-880-G
+    site: pielach
+    status: processed
+    productPaths:
+      - 12_PROCESSED_DATASETS/2015-03-20
+
+  2016-11-04:
+    title: Pielach 2016-11-04
+    description: Airborne topo-bathymetric LiDAR, VQ-820-G (OE-FRI).
+    sensor: VQ-820-G
+    site: pielach
+    status: processed
+    productPaths:
+      - 12_PROCESSED_DATASETS/2016-11-04
+
+  2017-11-15:
+    title: Pielach 2017-11-15
+    description: Airborne topo-bathymetric LiDAR, VQ-880-G.
+    sensor: VQ-880-G
+    site: pielach
+    status: processed
+    productPaths:
+      - 12_PROCESSED_DATASETS/2017-11-15
+
+  2021-03-09:
+    title: Pielach 2021-03-09 (dual-sensor)
+    description: Two sensors same day (Skyability), VQ-880-GH + VQ-840-G.
+    sensor:
+      - VQ-880-GH
+      - VQ-840-G
+    site: pielach
+    status: processed
+    productPaths:
+      - 12_PROCESSED_DATASETS/2021-03-09
+
+  2023-02-08:
+    title: Pielach 2023-02-08
+    description: Airborne topo-bathymetric LiDAR, VQ-880-GII. 155 GB raw.
+    sensor: VQ-880-GII
+    site: pielach
+    status: processed
+    productPaths:
+      - 12_PROCESSED_DATASETS/2023-02-08
+
   2024-10-09:
-    title: Oct-2024 multi-method Campaign
-    description:
-      Dunno
+    title: Pielach 2024-10-09 (Oct-2024 multi-method)
+    description: VQ-880-GII airborne, core of the Oct-2024 multi-method window.
     sensor: VQ-880-GII
     site: pielach
     status: processed

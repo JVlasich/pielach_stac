@@ -1,0 +1,23 @@
+# will be added with cli.py and read by config.py and config_ext.py separately.
+
+# Points to file with the campaign registry (relative to this file).
+campaigns_file: campaigns.yaml
+
+# Global STAC Collection metadata shared across all per-campaign collections.
+collection:
+  id: pielach
+  title: Pielach time-series
+  description:
+    Decade-long per-campaign collections of cloud-native point clouds and height models.
+  license: proprietary
+  providers:
+    - name: TU Wien, Department of Geodesy and Geoinformation
+      roles:
+        - producer
+        - licensor
+  keywords:
+    - lidar
+    - bathymetry
+    - pielach
+    - point cloud
+    - dtm
