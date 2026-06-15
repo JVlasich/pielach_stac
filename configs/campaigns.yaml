@@ -1,0 +1,12 @@
+root_dir: &ROOT P:/Studies/13_Pielach/
+
+campaigns:
+  2024-10-09:
+    title: Oct-2024 multi-method Campaign
+    description:
+      Dunno
+    sensor: VQ-880-GII
+    site: pielach
+    status: processed
+    productPaths:
+      - 12_PROCESSED_DATASETS/2024-10-09

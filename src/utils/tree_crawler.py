@@ -6,10 +6,15 @@ full listing is impractical. Directories exceeding a configurable file-count
 threshold are summarized by extension distribution instead of listing every
 file individually.
 
+Size collection, file counting and extension mapping are each optional. With
+all three disabled (--plain) the tool acts as a faster, JSON-capable drop-in
+for Windows' "tree /f /a": every file listed, no stats, no stat() calls.
+
 Usage:
     python tree_crawler.py P:\\DATA\\PIELACH
     python tree_crawler.py ./data --format json --output tree.json
     python tree_crawler.py ./data --threshold 50 --max-depth 3 -v
+    python tree_crawler.py ./data --plain          # tree /f /a equivalent
 
 As a library:
     from tree_crawler import crawl_directory, render_text, to_json
@@ -28,10 +33,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULTS = {
-    "threshold": 100,
+    "threshold": 1e9,
     "max_depth": None,
     "format": "text",
     "no_size": False,
+    "no_count": False,
+    "no_ext": False,
+    "plain": False,
     "verbose": False,
     "max_listed": 20,
 }
@@ -39,13 +47,17 @@ DEFAULTS = {
 
 @dataclass
 class DirNode:
-    """One directory in the crawl tree."""
+    """One directory in the crawl tree.
+
+    total_size, file_count and ext_distribution are None when their
+    collection was disabled.
+    """
     name: str
     path: str
-    total_size: int
-    file_count: int
-    ext_distribution: dict[str, int]
     children: list[DirNode] = field(default_factory=list)
+    total_size: int | None = None
+    file_count: int | None = None
+    ext_distribution: dict[str, int] | None = None
     summarized: bool = False
     files: list[str] | None = None
 
@@ -56,12 +68,15 @@ def crawl_directory(
     threshold: int = DEFAULTS["threshold"],
     max_depth: int | None = DEFAULTS["max_depth"],
     collect_size: bool = True,
+    count_files: bool = True,
+    map_ext: bool = True,
     verbose: bool = False,
 ) -> DirNode:
     """Crawl root and return a DirNode tree.
 
     Directories with >= threshold files are summarized (extension
-    distribution only, no individual filenames).
+    distribution only, no individual filenames). Summarization requires
+    count_files; with counting disabled every file is listed.
     """
     root = root.resolve()
     if not root.is_dir():
@@ -73,6 +88,8 @@ def crawl_directory(
         max_depth=max_depth,
         current_depth=0,
         collect_size=collect_size,
+        count_files=count_files,
+        map_ext=map_ext,
         verbose=verbose,
     )
 
@@ -84,6 +101,8 @@ def _crawl_one(
     max_depth: int | None,
     current_depth: int,
     collect_size: bool,
+    count_files: bool,
+    map_ext: bool,
     verbose: bool,
 ) -> DirNode:
     if verbose:
@@ -108,30 +127,24 @@ def _crawl_one(
                                 total_size += entry.stat(follow_symlinks=False).st_size
                             except OSError:
                                 pass
-                        suffix = Path(entry.name).suffix.lower() or "(no ext)"
-                        ext_dist[suffix] = ext_dist.get(suffix, 0) + 1
-                        if file_count <= threshold:
-                            filenames.append(entry.name)
+                        if map_ext:
+                            suffix = Path(entry.name).suffix.lower() or "(no ext)"
+                            ext_dist[suffix] = ext_dist.get(suffix, 0) + 1
+                        filenames.append(entry.name)
                 except OSError:
                     pass
     except PermissionError:
         return DirNode(
             name=dir_path.name + " [ACCESS DENIED]",
             path=str(dir_path),
-            total_size=0,
-            file_count=0,
-            ext_distribution={},
         )
     except OSError as e:
         return DirNode(
             name=dir_path.name + f" [ERROR: {e.strerror}]",
             path=str(dir_path),
-            total_size=0,
-            file_count=0,
-            ext_distribution={},
         )
 
-    summarized = file_count >= threshold
+    summarized = count_files and file_count >= threshold
     if summarized:
         filenames = None
     else:
@@ -147,16 +160,18 @@ def _crawl_one(
                 max_depth=max_depth,
                 current_depth=current_depth + 1,
                 collect_size=collect_size,
+                count_files=count_files,
+                map_ext=map_ext,
                 verbose=verbose,
             ))
 
     return DirNode(
         name=dir_path.name,
         path=str(dir_path),
-        total_size=total_size,
-        file_count=file_count,
-        ext_distribution=ext_dist,
         children=children,
+        total_size=total_size if collect_size else None,
+        file_count=file_count if count_files else None,
+        ext_distribution=ext_dist if map_ext else None,
         summarized=summarized,
         files=filenames,
     )
@@ -164,11 +179,10 @@ def _crawl_one(
 
 # ---- Output: Text ----
 
-def render_text(node: DirNode, *, show_size: bool = True, max_listed: int = DEFAULTS["max_listed"]) -> str:
+def render_text(node: DirNode, *, max_listed: int = DEFAULTS["max_listed"]) -> str:
     lines: list[str] = []
-    size_str = f" ({_human_size(node.total_size)})" if show_size else ""
-    lines.append(f"{node.name}\\{size_str}")
-    _render_children(node, lines, prefix="", show_size=show_size, max_listed=max_listed)
+    lines.append(f"{node.name}\\{_size_suffix(node)}")
+    _render_children(node, lines, prefix="", max_listed=max_listed)
     return "\n".join(lines)
 
 
@@ -176,13 +190,20 @@ def _render_children(
     node: DirNode,
     lines: list[str],
     prefix: str,
-    show_size: bool,
     max_listed: int,
 ) -> None:
+    # items: ("filegroup", node), ("file", name) or ("dir", node). With a
+    # header the files nest under it; without one (plain mode) each file is a
+    # sibling of the subdirs so connectors stay correct.
     items: list[tuple[str, object]] = []
 
-    if node.file_count > 0:
-        items.append(("files", node))
+    if _has_files(node):
+        header = _files_header(node)
+        if header is not None:
+            items.append(("filegroup", node))
+        else:
+            for name in _listed_files(node, max_listed):
+                items.append(("file", name))
 
     for child in node.children:
         items.append(("dir", child))
@@ -194,25 +215,60 @@ def _render_children(
 
         if kind == "dir":
             child_node: DirNode = obj
-            size_str = f" ({_human_size(child_node.total_size)})" if show_size else ""
-            lines.append(f"{prefix}{connector}{child_node.name}\\{size_str}")
-            _render_children(child_node, lines, prefix + extension, show_size, max_listed)
-        elif kind == "files":
+            lines.append(f"{prefix}{connector}{child_node.name}\\{_size_suffix(child_node)}")
+            _render_children(child_node, lines, prefix + extension, max_listed)
+        elif kind == "filegroup":
             file_node: DirNode = obj
-            dist_str = _format_ext_dist(file_node.ext_distribution, file_node.file_count)
-            if file_node.summarized:
-                lines.append(f"{prefix}{connector}[{file_node.file_count} files: {dist_str}]")
-            else:
-                lines.append(f"{prefix}{connector}[{file_node.file_count} files: {dist_str}]")
-                file_prefix = prefix + extension
-                listed = file_node.files[:max_listed] if file_node.files else []
-                for fi, fname in enumerate(listed):
-                    is_last_file = (fi == len(listed) - 1) and (len(file_node.files) <= max_listed)
-                    fc = "\\-- " if is_last_file else "+-- "
-                    lines.append(f"{file_prefix}{fc}{fname}")
-                remaining = file_node.file_count - len(listed)
-                if remaining > 0:
-                    lines.append(f"{file_prefix}\\-- ... ({remaining} more)")
+            lines.append(f"{prefix}{connector}{_files_header(file_node)}")
+            if not file_node.summarized:
+                _render_file_list(file_node, lines, prefix + extension, max_listed)
+        elif kind == "file":
+            lines.append(f"{prefix}{connector}{obj}")
+
+
+def _listed_files(node: DirNode, max_listed: int) -> list[str]:
+    files = node.files or []
+    listed = files if max_listed <= 0 else files[:max_listed]
+    remaining = len(files) - len(listed)
+    if remaining > 0:
+        return listed + [f"... ({remaining} more)"]
+    return listed
+
+
+def _render_file_list(
+    node: DirNode,
+    lines: list[str],
+    prefix: str,
+    max_listed: int,
+) -> None:
+    listed = _listed_files(node, max_listed)
+    for fi, fname in enumerate(listed):
+        fc = "\\-- " if fi == len(listed) - 1 else "+-- "
+        lines.append(f"{prefix}{fc}{fname}")
+
+
+def _has_files(node: DirNode) -> bool:
+    return bool(node.files) or (node.file_count or 0) > 0
+
+
+def _size_suffix(node: DirNode) -> str:
+    if node.total_size is None:
+        return ""
+    return f" ({_human_size(node.total_size)})"
+
+
+def _files_header(node: DirNode) -> str | None:
+    """Bracketed summary line for a directory's files, or None when neither
+    count nor extension mapping is collected (plain listing)."""
+    count = node.file_count
+    dist = _format_ext_dist(node.ext_distribution) if node.ext_distribution else ""
+    if count is not None and dist:
+        return f"[{count} files: {dist}]"
+    if count is not None:
+        return f"[{count} files]"
+    if dist:
+        return f"[{dist}]"
+    return None
 
 
 def _human_size(nbytes: int) -> str:
@@ -227,7 +283,8 @@ def _human_size(nbytes: int) -> str:
     return f"{nbytes:.1f} PB"
 
 
-def _format_ext_dist(ext_dist: dict[str, int], total: int) -> str:
+def _format_ext_dist(ext_dist: dict[str, int]) -> str:
+    total = sum(ext_dist.values())
     if total == 0:
         return ""
     sorted_exts = sorted(ext_dist.items(), key=lambda x: x[1], reverse=True)
@@ -244,14 +301,17 @@ def _format_ext_dist(ext_dist: dict[str, int], total: int) -> str:
 # ---- Output: JSON ----
 
 def to_dict(node: DirNode) -> dict:
-    d = {
+    d: dict = {
         "name": node.name,
         "path": node.path,
-        "total_size": node.total_size,
-        "file_count": node.file_count,
-        "ext_distribution": node.ext_distribution,
-        "summarized": node.summarized,
     }
+    if node.total_size is not None:
+        d["total_size"] = node.total_size
+    if node.file_count is not None:
+        d["file_count"] = node.file_count
+        d["summarized"] = node.summarized
+    if node.ext_distribution is not None:
+        d["ext_distribution"] = node.ext_distribution
     if node.files is not None:
         d["files"] = node.files
     if node.children:
@@ -273,7 +333,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Directories with many files are summarized by extension distribution.
-            Output is read-only — the input directory is never modified.
+            --plain disables size, count and extension mapping for a fast
+            tree /f /a style full listing. Output is read-only.
         """)
     )
 
@@ -287,8 +348,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"Summarize dirs with >= N files (default: {DEFAULTS['threshold']})")
     parser.add_argument("-d", "--max-depth", type=int, default=None,
                         help="Maximum recursion depth (default: unlimited)")
+    parser.add_argument("-m", "--max-listed", type=int, default=DEFAULTS["max_listed"],
+                        help=f"Max files listed per dir, 0 = unlimited (default: {DEFAULTS['max_listed']})")
     parser.add_argument("--no-size", action="store_true",
-                        help="Skip file size collection (faster)")
+                        help="Skip file size collection (faster, no stat calls)")
+    parser.add_argument("--no-count", action="store_true",
+                        help="Skip file counting and threshold summarization")
+    parser.add_argument("--no-ext", action="store_true",
+                        help="Skip extension distribution mapping")
+    parser.add_argument("--plain", action="store_true",
+                        help="tree /f /a drop-in: implies --no-size --no-count --no-ext, lists all files")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print progress to stderr")
 
@@ -299,18 +368,25 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    no_size = args.no_size or args.plain
+    no_count = args.no_count or args.plain
+    no_ext = args.no_ext or args.plain
+    max_listed = 0 if args.plain else args.max_listed
+
     tree = crawl_directory(
         args.directory,
         threshold=args.threshold,
         max_depth=args.max_depth,
-        collect_size=not args.no_size,
+        collect_size=not no_size,
+        count_files=not no_count,
+        map_ext=not no_ext,
         verbose=args.verbose,
     )
 
     if args.format == "json":
         output = to_json(tree)
     else:
-        output = render_text(tree, show_size=not args.no_size)
+        output = render_text(tree, max_listed=max_listed)
 
     if args.output:
         args.output.write_text(output, encoding="utf-8")
