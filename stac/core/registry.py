@@ -1,83 +1,80 @@
 """Default Registry
 
-Override merge ('config.yaml'): 'asset_overrides' (list) extend 'STEM_PATTERNS'
+Override merge ('config.yaml'): 'asset_overrides' (dict) merge per-label onto 'STEM_PATTERNS'
 order-irrelevant matches per set.
 'role_overrides' (dict) deep-merge per-label onto 'LABELS'.
 New labels may be defined entirely in 'role_overrides'.
 
 override merge, validation"""
 
-# stem_patterns: split.("_") -> set -> match agaisnt required
-# {"require": [], "forbid": [], "extensions": "", "label": ""}
-STEM_PATTERNS: list[dict[str, object]] = [
+# stem_patterns: label -> match rule. split.("_") -> set -> match agaisnt required
+# {label: {"require": [], "forbid": [], "extensions": ""}}
+STEM_PATTERNS: dict[str, dict[str, object]] = {
     # Pointcloud variants
-    {
+    "pointcloud_copc": {
         "require": [],
         "forbid": [],
         "extensions": [".copc.laz"],
-        "label": "pointcloud_copc"
     },
-    {
+    "pointcloud": {
         "require": [],
         "forbid": [],
         "extensions": [".laz"],
-        "label": "pointcloud"
     },
-    {
+    "pointcloud_las": {
         "require": [],
         "forbid": [],
         "extensions": [".las"],
-        "label": "pointcloud_las"
     },
 
     # Ortho
-    {
+    "orthophoto": {
         "require": ["transparent", "mosaic"],
         "forbid": [],
         "extensions": [".tif", ".tiff"],
-        "label": "orthophoto"
     },
 
     # DTM variants
-    {
+    "dtm": {
         "require": ["dtm"],
         "forbid": ["shd"],
         "extensions": [".tif", ".tiff"],
-        "label": "dtm"
     },
-    {
+    "dtm_filled": {
         "require": ["dtm", "filled"],
         "forbid": ["shd"],
         "extensions": [".tif", ".tiff"],
-        "label": "dtm_filled"
     },
-    {
+    "dtm_masked": {
         "require": ["dtm", "masked"],
         "forbid": ["shd"],
         "extensions": [".tif", ".tiff"],
-        "label": "dtm_masked"
     },
 
     # DSM variants
-    {
+    "dsm": {
         "require": ["dsm"],
         "forbid": ["shd"],
         "extensions": [".tif", ".tiff"],
-        "label": "dsm"
     },
-    {
+    "dsm_filled": {
         "require": ["dsm", "filled"],
         "forbid": ["shd"],
         "extensions": [".tif", ".tiff"],
-        "label": "dsm_filled"
     },
-    {
+    "dsm_masked": {
         "require": ["dsm", "masked"],
         "forbid": ["shd"],
         "extensions": [".tif", ".tiff"],
-        "label": "dsm_masked"
     },
-]
+
+    # shd for filtering
+    "shade": {
+        "require": ["shd"],
+        "forbid": [],
+        "extensions": [".tif", ".tiff"],
+    },
+}
 
 
 # labels: label → role definition
@@ -154,6 +151,16 @@ LABELS: dict[str, dict[str, object]] = {
         "extensions": ["raster", "projection", "file"],
         "thumbnail":  False,
     },
+
+    # shades ignored?
+    # "shade":  { # unsure about this
+    #     "category":   "ignore",
+    #     "kind":       "raster",
+    #     "stac_roles": ["visual"],
+    #     "media_type": "image/tiff; application=geotiff; profile=cloud-optimized",
+    #     "extensions": ["raster", "projection", "file"],
+    #     "thumbnail":  False,
+    # },
 }
 
 SIDECAR_EXTENSIONS = {".prj", ".tfw", ".aux.xml"}  # recognized, never an asset, never "unknown"

@@ -46,7 +46,7 @@ def _best_match(name: str):
     tokens, then longer extension (so dtm_masked > dtm, .copc.laz > .laz)."""
     low = name.lower()
     candidates = []
-    for pat in STEM_PATTERNS:
+    for label, pat in STEM_PATTERNS.items():
         ext = _match_ext(low, pat["extensions"])
         if ext is None:
             continue
@@ -55,16 +55,16 @@ def _best_match(name: str):
             continue
         if set(pat["forbid"]) & tokens:
             continue
-        candidates.append((pat, ext))
+        candidates.append((label, pat, ext))
     if not candidates:
         return None
-    return max(candidates, key=lambda c: (len(c[0]["require"]), len(c[1])))
+    return max(candidates, key=lambda c: (len(c[1]["require"]), len(c[2])))
 
 
 def match(filename) -> str | None:
     """The most specific registry label for a filename, or None."""
     bm = _best_match(Path(filename).name)
-    return bm[0]["label"] if bm else None
+    return bm[0] if bm else None
 
 
 # --- grouping / ids ---
@@ -128,8 +128,7 @@ def discover(folder, policy: str = "warn") -> list:
         if bm is None:
             _handle_unknown(f, "no registry match", policy)
             continue
-        pat, ext = bm
-        label = pat["label"]
+        label, pat, ext = bm
         if label not in LABELS:
             _handle_unknown(f, f"label {label!r} not in LABELS", policy)
             continue
