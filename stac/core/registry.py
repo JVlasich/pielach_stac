@@ -164,3 +164,69 @@ LABELS: dict[str, dict[str, object]] = {
 }
 
 SIDECAR_EXTENSIONS = {".prj", ".tfw", ".aux.xml"}  # recognized, never an asset, never "unknown"
+
+
+# --- override merge ---
+
+_PATTERN_KEYS = ("require", "forbid", "extensions")
+_LABEL_KEYS = ("category", "kind", "stac_roles", "media_type", "extensions", "thumbnail")
+
+
+def merge_overrides(patterns, labels):
+    """Per-campaign overrides onto the defaults.
+    Returns merged (stem_patterns, labels) copies
+    the module globals are not mutated."""
+    sp = dict(STEM_PATTERNS); sp.update(patterns or {})
+    lb = dict(LABELS);        lb.update(labels or {})
+    _validate(sp, lb)
+    return sp, lb
+
+
+def _validate(stem_patterns, labels) -> None:
+    for key, value in stem_patterns.items():
+        if not isinstance(value, dict) or not value:
+            raise ValueError(f"pattern {key!r}: set at least one key")
+        for k in _PATTERN_KEYS:
+            value.setdefault(k, [])  # omitted require/forbid/extensions -> []
+    for key, value in labels.items():
+        missing = [k for k in _LABEL_KEYS if k not in value]
+        if missing:
+            # labels require all keys for now.
+            # TODO: infer missing label keys at runtime instead of erroring.
+            raise ValueError(f"label {key!r}: missing keys {missing}")
+
+
+# --- self-check ---
+
+if __name__ == "__main__":
+    # pattern override replaces the entry, defaults the omitted keys, leaves siblings alone
+    sp, lb = merge_overrides({"pointcloud": {"extensions": [".laz", ".las"]}}, {})
+    assert sp["pointcloud"]["extensions"] == [".laz", ".las"]
+    assert sp["pointcloud"]["require"] == [] and sp["pointcloud"]["forbid"] == []
+    assert sp["dtm"] == STEM_PATTERNS["dtm"] and sp["dsm"] == STEM_PATTERNS["dsm"]
+
+    # new label needs all keys; missing key or empty pattern raises
+    full = {"category": "pointcloud", "kind": "pcl", "stac_roles": ["data"],
+            "media_type": "application/vnd.laszip+copc",
+            "extensions": ["pointcloud", "projection", "file"], "thumbnail": True}
+    _, lb = merge_overrides({}, {"pointcloud": full})
+    assert lb["pointcloud"] == full
+    incomplete = {k: v for k, v in full.items() if k != "extensions"}
+    for bad in (lambda: merge_overrides({}, {"x": incomplete}),  # label missing a key
+                lambda: merge_overrides({"x": {}}, {})):          # empty pattern entry
+        try:
+            bad(); raise AssertionError("expected ValueError")
+        except ValueError:
+            pass
+
+    for i in range(2):
+        try:
+            dummy = merge_overrides({}, {"x": incomplete}) if i == 0 else merge_overrides({"x": {}}, {})
+        except ValueError as e:
+            print(f"expected this error: {e}, this is good")
+
+    # no overrides -> copies equal to the originals
+    sp, lb = merge_overrides(None, None)
+    assert sp == STEM_PATTERNS and lb == LABELS
+
+    print("registry self-check ok")

@@ -41,12 +41,12 @@ def _match_ext(low_name: str, exts) -> str | None:
     return None
 
 
-def _best_match(name: str):
+def _best_match(name: str, stem_patterns):
     """Most specific (pattern, matched_ext) for a filename, or None. Specificity = more require
     tokens, then longer extension (so dtm_masked > dtm, .copc.laz > .laz)."""
     low = name.lower()
     candidates = []
-    for label, pat in STEM_PATTERNS.items():
+    for label, pat in stem_patterns.items():
         ext = _match_ext(low, pat["extensions"])
         if ext is None:
             continue
@@ -61,9 +61,9 @@ def _best_match(name: str):
     return max(candidates, key=lambda c: (len(c[1]["require"]), len(c[2])))
 
 
-def match(filename) -> str | None:
+def match(filename, stem_patterns=STEM_PATTERNS) -> str | None:
     """The most specific registry label for a filename, or None."""
-    bm = _best_match(Path(filename).name)
+    bm = _best_match(Path(filename).name, stem_patterns)
     return bm[0] if bm else None
 
 
@@ -115,8 +115,12 @@ def _handle_unknown(path: Path, reason: str, policy: str) -> None:
     # skip: silent
 
 
-def discover(folder, policy: str = "warn") -> list:
-    """Discover Products under a campaign folder. policy = skip | warn | raise for unclassifiable files."""
+def discover(folder, policy: str = "warn", stem_patterns=None, labels=None) -> list:
+    """Discover Products under a campaign folder. policy = skip | warn | raise for unclassifiable files.
+    stem_patterns/labels default to the module registry; pass merge_overrides() output to apply
+    per-campaign overrides."""
+    sp = stem_patterns if stem_patterns is not None else STEM_PATTERNS
+    lb = labels if labels is not None else LABELS
     folder = Path(folder)
     files = _walk(folder)
     sidecars = [f for f in files if _sidecar_ext(f.name)]
@@ -124,15 +128,15 @@ def discover(folder, policy: str = "warn") -> list:
 
     groups: dict = {}
     for f in candidates:
-        bm = _best_match(f.name)
+        bm = _best_match(f.name, sp)
         if bm is None:
             _handle_unknown(f, "no registry match", policy)
             continue
         label, pat, ext = bm
-        if label not in LABELS:
+        if label not in lb:
             _handle_unknown(f, f"label {label!r} not in LABELS", policy)
             continue
-        info = LABELS[label]
+        info = lb[label]
         category = info["category"]
         tokens = f.name[: -len(ext)].lower().split("_")
         key = (category, _group_key(tokens, pat["require"], category))
@@ -170,27 +174,6 @@ def discover(folder, policy: str = "warn") -> list:
     return products
 
 
-# --- self-check ---
-
-def _make_fixture(tmp: Path) -> None:
-    names = [
-        "tiles/pielach_2023-02-08_526000_534050.copc.laz",
-        "tiles/pielach_2023-02-08_526500_534050.copc.laz",
-        "pielach_2023-02-08_DTM_etrs89_cog.tif",
-        "pielach_2023-02-08_DTM_masked_etrs89_cog.tif",   # label dtm_masked
-        "pielach_2023-02-08_DSM_etrs89_cog.tif",          # label dsm
-        "pielach_2023-02-08_transparent_mosaic_cog.tif",  # label orthophoto
-        "pielach_2023-02-08_DTM_etrs89_cog.tfw",          # sidecar
-        "pielach_2023-02-08_DTM_etrs89_cog.prj",          # sidecar
-        "opalsLog.xml",                                   # stray
-        "qc_plot.svg",                                    # stray
-    ]
-    for n in names:
-        p = tmp / n
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.touch()
-
-
 def _print(products) -> None:
     print(f"\nproducts ({len(products)}):")
     for p in products:
@@ -200,7 +183,28 @@ def _print(products) -> None:
             print(f"      - {a.label}: {a.path.name}{sc}")
 
 
+# --- self-check ---
 if __name__ == "__main__":
+
+    def _make_fixture(tmp: Path) -> None:
+        names = [
+            "tiles/pielach_2023-02-08_526000_534050.copc.laz",
+            "tiles/pielach_2023-02-08_526500_534050.copc.laz",
+            "pielach_2023-02-08_DTM_etrs89_cog.tif",
+            "pielach_2023-02-08_DTM_masked_etrs89_cog.tif",   # label dtm_masked
+            "pielach_2023-02-08_DSM_etrs89_cog.tif",          # label dsm
+            "pielach_2023-02-08_transparent_mosaic_cog.tif",  # label orthophoto
+            "pielach_2023-02-08_DTM_etrs89_cog.tfw",          # sidecar
+            "pielach_2023-02-08_DTM_etrs89_cog.prj",          # sidecar
+            "opalsLog.xml",                                   # stray
+            "qc_plot.svg",                                    # stray
+        ]
+        for n in names:
+            p = tmp / n
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.touch()
+
+
     args = sys.argv[1:]
     if args:
         _print(discover(Path(args[0])))

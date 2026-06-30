@@ -4,11 +4,11 @@ import argparse
 import os
 
 
-def validate_cog_tiles(input_dire):
-    paths = glob(os.path.join(args.input, "*.tif"))
+def validate_cog_tiles(input_dir):
+    paths = glob(os.path.join(input_dir, "*.tif"))
 
-    for path in paths: 
-        warnings, errors, details = validate(path)
+    for path in paths:
+        _, errors, _ = validate(path) # warning, errors, details
         if errors:
             print("Not a valid COG:", errors)
         else:
