@@ -187,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Output directory for COPC tiles. Single input: exact dir. "
                              "Multiple inputs: parent root, each input goes to <outdir>/<stem>_tiles. "
                              "(default: <infile_stem>_tiles beside each input)")
-    
+
     tac.add_argument("--pointOrigin", type=str, default=None,
                         help=f"Tile origin coordinates (default: {DEFAULTS['pointOrigin']})")
     tac.add_argument("--tileSize", type=float, default=None,
@@ -198,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"Tile size for opalsImport (default: {DEFAULTS['tileSize_odm']})")
     tac.add_argument("--keepodm", action=argparse.BooleanOptionalAction, default=None, # note to self: NO store_true
                         help=f"Keep intermediate ODM files (default: {DEFAULTS['keepodm']})")
-    
+
 
     return parser
 
@@ -251,20 +251,6 @@ def main():
     if cli_args.init is not None:
         config.generate_template_config(namespace, Path(cli_args.init))
         sys.exit(0)
-
-##################### New config handling #################################
-# import config.py as config
-# config.register_defaults("namespace", DEFAULTS)
-#
-# if cli_args.init is not None:
-#     config.generate_template_config("namespace", Path(cli_args.init))
-#     sys.exit(0)
-#
-# if cli_args.config is not None:
-#     config.load_config(cli_args.config) -> None
-#
-# config.merge_cli("namespace", cli_args: argparse.Namespace)
-# cfg = config.section("namespace") 
 
     # Load config file
     if cli_args.config is not None:

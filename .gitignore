@@ -2,11 +2,15 @@ nogit/
 academic/
 env/
 .vscode/
+bachelor.code-workspace
+
 **/__pycache__
 **/.claude
-*CLAUDE.md
+**/opalsLog*
+**/opalsError*
 
-bachelor.code-workspace
+*CLAUDE.md
 *.yaml
 *.yml
+
 !configs/**/*.yaml

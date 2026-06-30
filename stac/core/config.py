@@ -1,4 +1,3 @@
-import re
 import sys
 import yaml
 from pathlib import Path
@@ -66,71 +65,21 @@ def section(namespace: str) -> dict:
     return merged
 
 
-_HEADER_RE = re.compile(r"^[A-Za-z_]\w*:\s*$")  # a top-level "section:" line
-
-
-def _section_body(ns: str) -> list:
-    """The commented key lines for one section (no header, no trailing blank)."""
-    return [f"  # {key}: {_repr_yaml(value)}" for key, value in _defaults[ns].items()]
-
-
-def _rstrip_blanks(lines: list) -> list:
-    while lines and lines[-1].strip() == "":
-        lines.pop()
-    return lines
-
-
-def _parse_template(text: str) -> tuple:
-    """Split a template into (preamble, sections). sections is an ordered name->body dict,
-    body being the lines under a 'name:' header. Indented/comment lines never start a section."""
-    preamble = []
-    sections = {}
-    current = None
-    for line in text.splitlines():
-        if _HEADER_RE.match(line):
-            current = line.split(":", 1)[0]
-            sections[current] = []
-        elif current is None:
-            preamble.append(line)
-        else:
-            sections[current].append(line)
-    return preamble, sections
-
-
 def generate_template_config(namespace: str, path: Path) -> None:
-    """Append/refresh a commented YAML template. Refreshes commons + the given namespace,
-    preserves any sibling sections, so one file can be built up across modules."""
+    """Write a commented YAML template of commons + the given namespace's defaults."""
     if namespace not in _defaults:
         raise KeyError(f"Namespace '{namespace}' not registered")
 
-    path = Path(path)
-    if path.exists():
-        preamble, sections = _parse_template(path.read_text(encoding="utf-8"))
-    else:
-        preamble = [
-            "# Configuration template. All values shown are defaults.",
-            "# Uncomment and modify as needed. CLI args override values set here.",
-        ]
-        sections = {}
-
+    lines = [
+        "# Configuration template. All values shown are defaults.",
+        "# Uncomment and modify as needed. CLI args override values set here.",
+        "",
+    ]
     for ns in (COMMONS, namespace):
-        sections[ns] = _section_body(ns)  # refresh existing or append new
+        lines.append(f"{ns}:")
+        body = yaml.safe_dump(_defaults[ns], sort_keys=False).splitlines()
+        lines += [f"  # {line}" for line in body]
+        lines.append("")
 
-    out = _rstrip_blanks(list(preamble))
-    if out:
-        out.append("")
-    for name, body in sections.items():
-        out.append(f"{name}:")
-        out.extend(_rstrip_blanks(list(body)))
-        out.append("")
-
-    path.write_text("\n".join(out), encoding="utf-8")
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
     print(f"Template config written to: {path}")
-
-
-def _repr_yaml(value) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)

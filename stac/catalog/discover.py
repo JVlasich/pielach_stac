@@ -28,7 +28,7 @@ class Product:
     id: str            # one future Item
     category: str
     kind: str
-    assets: list       # 1 for a PC tile; N variants for a raster category
+    assets: list[Asset]       # 1 for a PC tile; N variants for a raster category
 
 
 # --- matching ---
