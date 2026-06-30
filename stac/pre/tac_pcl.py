@@ -122,6 +122,8 @@ def convert_to_copc(laz_files: list, tile_tmp: Path, odir: Path):
         "-odir", str(odir),
         "-progress",
     ],
+        # Check true sometimes raises because of CRS issues with some files
+        # Copcfile still written, lascopcindex exits with 2
         check=True
     )
 
@@ -203,8 +205,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def process_one(infile: Path, cfg: dict, outdir: Path, tmp_root: Path) -> Path:
+def process_one(infile: Path | str, cfg: dict, outdir: Path | str, tmp_root: Path | str) -> Path:
     """Run the full tile+convert pipeline for one input. Returns the produced ODM path."""
+    infile, outdir, tmp_root = Path(infile), Path(outdir), Path(tmp_root)
     work = tmp_root / infile.stem          # per-input work dir isolates odm, grid and tiles
     tile_tmp = work / "tiles"
     outdir.mkdir(parents=True, exist_ok=True)

@@ -37,7 +37,7 @@ def file_meta(p: Path | str) -> FileMeta:
     # checks
     if isinstance(p, str):
         p = Path(p)
-    if not (p.exists and p.is_file):
+    if not (p.exists() and p.is_file()):
         raise ValueError("Path doesnt exist or is not a file")
 
     # stats

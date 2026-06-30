@@ -1,0 +1,25 @@
+# Metadata
+collection:
+  name: "hi"
+  description: "hi again"
+  instruments:
+    - instument1
+    - instument2
+  providers:
+    TU Wien, Department fuer Geodaesie und Geoinformation:
+      roles:
+        - processor
+      url: https://www.tuwien.at/mg/geo
+
+# Overrides  
+patterns:
+  pointcloud:
+    extensions:
+      - .laz
+      - .las
+labels:
+  pointcloud:
+    category: pointcloud
+    kind: pcl
+    stac_roles: ["data"]
+    "media_type": "application/vnd.laszip+copc"

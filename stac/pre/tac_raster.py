@@ -182,8 +182,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def process_one(infile: Path, cfg: dict, inputs_count: int) -> None:
+def process_one(infile: Path | str, cfg: dict, inputs_count: int) -> None:
     """Convert one input. Tiles if it exceeds minTileSize, else single COG."""
+    infile = Path(infile)
     if not infile.is_file():
         raise FileNotFoundError(f"Input file not found: {infile}")
 
