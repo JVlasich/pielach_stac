@@ -8,6 +8,8 @@ bachelor.code-workspace
 **/.claude
 **/opalsLog*
 **/opalsError*
+**/.ipynb*
+**/tmp*
 
 *CLAUDE.md
 *.yaml
