@@ -27,7 +27,7 @@ STEM_PATTERNS: dict[str, dict[str, object]] = {
         "extensions": [".las"],
     },
 
-    # Ortho (cloud-native twin "orthophoto_cog" derived below)
+    # Ortho
     "orthophoto": {
         "require": ["transparent", "mosaic"],
         "forbid": [],
@@ -77,11 +77,7 @@ STEM_PATTERNS: dict[str, dict[str, object]] = {
 }
 
 
-# labels: label → role definition
-# raster labels here are the NON-cloud-native (plain GeoTIFF) variants; their cloud-native
-# "_cog" twins (COG media type, cloud_native=True) are derived below. Non-CN files are
-# cataloged only as fallback when no CN twin exists (discover non_cloud_native policy, D11).
-# the base variant carries thumbnail=True, derived ones (filled/masked) don't.
+# labels: label -> role definition
 LABELS: dict[str, dict[str, object]] = {
     "pointcloud_copc": {
         "category":   "pointcloud",          # drives item-grouping + collection placement
@@ -90,7 +86,6 @@ LABELS: dict[str, dict[str, object]] = {
         "media_type": "application/vnd.laszip+copc",
         "extensions": ["pointcloud", "projection", "file"],  # drives reader gating + populators
         "thumbnail":  True,
-        "cloud_native": True,
     },
     "pointcloud": {
         "category":   "pointcloud",
@@ -99,7 +94,6 @@ LABELS: dict[str, dict[str, object]] = {
         "media_type": "application/vnd.laszip",
         "extensions": ["pointcloud", "projection", "file"],
         "thumbnail":  True,
-        "cloud_native": False,
     },
     "pointcloud_las": {
         "category":   "pointcloud",
@@ -108,7 +102,6 @@ LABELS: dict[str, dict[str, object]] = {
         "media_type": "application/vnd.las",
         "extensions": ["pointcloud", "projection", "file"],
         "thumbnail":  True,
-        "cloud_native": False,
     },
 
     # orthophoto: RGB orthomosaic, primary deliverable -> data + visual; eo for bands
@@ -119,7 +112,6 @@ LABELS: dict[str, dict[str, object]] = {
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["eo", "raster", "projection", "file"],
         "thumbnail":  True,
-        "cloud_native": False,
     },
 
     # DTM (terrain) variants -> category "dtm"
@@ -130,7 +122,6 @@ LABELS: dict[str, dict[str, object]] = {
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["raster", "projection", "file"],
         "thumbnail":  True,
-        "cloud_native": False,
     },
     "dtm_filled": {
         "category":   "dtm",
@@ -139,7 +130,6 @@ LABELS: dict[str, dict[str, object]] = {
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["raster", "projection", "file"],
         "thumbnail":  False,
-        "cloud_native": False,
     },
     "dtm_masked": {
         "category":   "dtm",
@@ -148,7 +138,6 @@ LABELS: dict[str, dict[str, object]] = {
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["raster", "projection", "file"],
         "thumbnail":  False,
-        "cloud_native": False,
     },
 
     # DSM (surface) variants -> category "dsm"
@@ -159,7 +148,6 @@ LABELS: dict[str, dict[str, object]] = {
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["raster", "projection", "file"],
         "thumbnail":  True,
-        "cloud_native": False,
     },
     "dsm_filled": {
         "category":   "dsm",
@@ -168,7 +156,6 @@ LABELS: dict[str, dict[str, object]] = {
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["raster", "projection", "file"],
         "thumbnail":  False,
-        "cloud_native": False,
     },
     "dsm_masked": {
         "category":   "dsm",
@@ -177,7 +164,6 @@ LABELS: dict[str, dict[str, object]] = {
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["raster", "projection", "file"],
         "thumbnail":  False,
-        "cloud_native": False,
     },
 
     # shades ignored?
@@ -191,21 +177,13 @@ LABELS: dict[str, dict[str, object]] = {
     # },
 }
 
-# derive the cloud-native raster twins: same rule + "cog" token, COG media type.
-# specificity in the matcher (more require tokens wins) picks the _cog label for *_cog.tif.
-_COG_MEDIA = "image/tiff; application=geotiff; profile=cloud-optimized"
-for _base in ("orthophoto", "dtm", "dtm_filled", "dtm_masked", "dsm", "dsm_filled", "dsm_masked"):
-    STEM_PATTERNS[_base + "_cog"] = {**STEM_PATTERNS[_base], "require": STEM_PATTERNS[_base]["require"] + ["cog"]}
-    LABELS[_base + "_cog"] = {**LABELS[_base], "media_type": _COG_MEDIA, "cloud_native": True}
-
-
 SIDECAR_EXTENSIONS = {".prj", ".tfw", ".aux.xml"}  # recognized, never an asset, never "unknown"
 
 
 # --- override merge ---
 
 _PATTERN_KEYS = ("require", "forbid", "extensions")
-_LABEL_KEYS = ("category", "kind", "stac_roles", "media_type", "extensions", "thumbnail", "cloud_native")
+_LABEL_KEYS = ("category", "kind", "stac_roles", "media_type", "extensions", "thumbnail")
 
 
 def merge_overrides(patterns, labels):
@@ -225,7 +203,6 @@ def _validate(stem_patterns, labels) -> None:
         for k in _PATTERN_KEYS:
             value.setdefault(k, [])  # omitted require/forbid/extensions -> []
     for key, value in labels.items():
-        value.setdefault("cloud_native", False)  # omitted in overrides -> treated as non-cloud-native
         missing = [k for k in _LABEL_KEYS if k not in value]
         if missing:
             # labels require all keys for now.
@@ -256,16 +233,8 @@ if __name__ == "__main__":
         except ValueError as e:
             print(f"expected this error: {e}, this is good")
 
-    # override omitting cloud_native defaults to False
-    assert lb["pointcloud"]["cloud_native"] is False
-
     # no overrides -> copies equal to the originals
     sp, lb = merge_overrides(None, None)
     assert sp == STEM_PATTERNS and lb == LABELS
-
-    # derived cog twins: extra require token, COG media type, cloud_native flipped
-    assert sp["dtm_cog"]["require"] == ["dtm", "cog"]
-    assert lb["dtm_cog"]["cloud_native"] and not lb["dtm"]["cloud_native"]
-    assert lb["orthophoto_cog"]["media_type"].endswith("profile=cloud-optimized")
 
     print("registry self-check ok")

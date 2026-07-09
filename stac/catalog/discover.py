@@ -1,15 +1,28 @@
 """Asset discovery and matching.
 
-Walk a campaign's product folder, classify files against the registry, emit one Product
-(= one future Item) per file, resolve cloud-native twins (D11), mark tile groups (D10),
-associate sidecars, and route anything unclassifiable through unknown_asset_policy.
+Walk a campaign's product folder, classify files against the registry, probe each file's
+cloud-native status (GDAL COG layout for rasters, .copc.laz extension for pointclouds),
+emit one Product (= one future Item) per file, resolve cloud-native twins, mark
+tile groups, associate sidecars, and route anything unclassifiable through
+unknown_asset_policy.
 """
 
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from osgeo import gdal
+
+try:  # optional, (pip install gdal-utils on GDAL < 3.2)
+    from osgeo_utils.samples.validate_cloud_optimized_geotiff import validate as _validate_cog
+except ImportError:
+    _validate_cog = None
+
 from ..core.registry import STEM_PATTERNS, LABELS, SIDECAR_EXTENSIONS
+
+gdal.UseExceptions()
+
+COG_MEDIA_TYPE = "image/tiff; application=geotiff; profile=cloud-optimized"
 
 
 @dataclass
@@ -21,8 +34,14 @@ class Asset:
     stac_roles: list
     media_type: str
     extensions: list   # which @populators run
-    cloud_native: bool # False -> fallback catalog entry (D11); build flags pielach:cloud_native
+    cloud_native: bool
     sidecars: list = field(default_factory=list)  # Paths matched by full basename
+
+    def __repr__(self) -> str:
+        cn = "cloud-native" if self.cloud_native else "NOT cloud-native"
+        sc = f" · {len(self.sidecars)} sidecar(s)" if self.sidecars else ""
+        return (f"Asset {self.path.name!r}  [{self.label}, {self.category}/{self.kind}]"
+                f" · {cn} · {self.media_type}{sc}")
 
 
 @dataclass
@@ -32,6 +51,16 @@ class Product:
     kind: str
     assets: list[Asset]       # always length 1 today; kept a list for the Item builder
     group: str | None = None  # tile-group name -> subcollection; None -> flat in the campaign
+
+    def __repr__(self) -> str:
+        head = f"Product {self.id!r}  [{self.category}/{self.kind}]"
+        if self.group:
+            head += f"  group={self.group}"
+        lines = [head]
+        for i, a in enumerate(self.assets):
+            branch = "└─" if i == len(self.assets) - 1 else "├─"
+            lines.append(f"{branch} {a!r}")
+        return "\n".join(lines)
 
 
 # --- matching ---
@@ -70,6 +99,32 @@ def match(filename, stem_patterns=STEM_PATTERNS) -> str | None:
     return bm[0] if bm else None
 
 
+# --- cloud-native probe ---
+
+def _probe_cloud_native(path: Path, kind: str, ext: str) -> bool:
+    """Pointclouds: ext == .copc.laz
+    Rasters: GDAL reports LAYOUT=COG for COG-structured files regardless of filename
+    files it detects also get the full COG validator,
+    advisory only (structural errors warn but stay cloud-native). Unreadable
+    rasters warn and count as non-cloud-native."""
+    if kind == "pcl":
+        return ext == ".copc.laz"
+    if kind != "raster":
+        return False
+    try:
+        ds = gdal.Open(str(path))
+    except RuntimeError as e:
+        print(f"WARN gdal open failed ({path.name}): {e}", file=sys.stderr)
+        return False
+    if ds.GetMetadataItem("LAYOUT", "IMAGE_STRUCTURE") != "COG":
+        return False
+    if _validate_cog is not None:
+        _, errors, _ = _validate_cog(str(path))
+        if errors:
+            print(f"WARN invalid COG ({path.name}): {'; '.join(errors)}", file=sys.stderr)
+    return True
+
+
 # --- ids / twins / tile groups ---
 
 def _item_id(name: str, ext: str) -> str:
@@ -86,32 +141,37 @@ def _twin_key(m: "_Match"):
     return (m.path.parent, m.category, tokens)
 
 
+def _cog_named(m: "_Match") -> bool:
+    return "cog" in m.path.name[: -len(m.ext)].lower().split("_")
+
+
 def _resolve_twins(matches: list, policy: str) -> list:
-    """Cloud-native twin supersedes its non-cloud-native sibling silently; lone
-    non-cloud-native files go through the non_cloud_native policy (D11):
+    """One deterministic winner per twin bucket: probed cloud-native first, cog-named
+    as tiebreak (losers are superseded silently). A non-cloud-native winner goes
+    through the non_cloud_native policy (D11):
     warn = catalog + stderr warning | skip = drop (old cloud-native-only rule) | raise."""
     buckets: dict = {}
     for m in matches:
         buckets.setdefault(_twin_key(m), []).append(m)
     kept = []
     for members in buckets.values():
-        cn = [m for m in members if m.info["cloud_native"]]
-        if cn:
-            kept.extend(cn)
+        winner = max(members, key=lambda m: (m.cloud_native, _cog_named(m)))
+        if winner.cloud_native:
+            kept.append(winner)
             continue
-        for m in members:
-            if policy == "raise":
-                raise ValueError(f"non-cloud-native asset: {m.path.name}")
-            if policy == "warn":
-                print(f"WARN non-cloud-native ({m.label}): {m.path.name}", file=sys.stderr)
-                kept.append(m)
-            # skip: drop silently
+        reason = "named cog, not a COG" if _cog_named(winner) else "non-cloud-native"
+        if policy == "raise":
+            raise ValueError(f"{reason}: {winner.path.name}")
+        if policy == "warn":
+            print(f"WARN {reason} ({winner.label}): {winner.path.name}", file=sys.stderr)
+            kept.append(winner)
+        # skip: drop silently
     return kept
 
 
 def _assign_tile_groups(products: list, root: Path) -> None:
     """Tiled = more than one product of a category sharing a subdir below the campaign
-    root (tac_pcl writes all tiles of one cloud into one dir, D9/D10). The subdir names
+    root (tac_pcl writes all tiles of one cloud into one dir). The subdir names
     the subcollection; files at the root stay flat. Single place to change this policy."""
     buckets: dict = {}
     for p in products:
@@ -134,6 +194,7 @@ class _Match:
     category: str
     ext: str
     info: dict
+    cloud_native: bool
 
 
 def _walk(folder: Path) -> list:
@@ -159,11 +220,11 @@ def _handle_unknown(path: Path, reason: str, policy: str) -> None:
 def discover(folder, policy: str = "warn", stem_patterns=None, labels=None,
              non_cloud_native: str = "warn") -> list:
     """Discover Products under a campaign folder. One file = one Product (one future Item);
-    tile groups share a .group -> subcollection, everything else is flat in the campaign (D10).
+    tile groups share a .group -> subcollection, everything else is flat in the campaign.
     policy = skip | warn | raise for unclassifiable files;
-    non_cloud_native = warn | skip | raise for files without a cloud-native twin (D11).
-    stem_patterns/labels default to the module registry; pass merge_overrides() output to apply
-    per-campaign overrides."""
+    non_cloud_native = warn | skip | raise for files without a cloud-native twin.
+    stem_patterns/labels default to the module registry
+    pass merge_overrides() output to apply per-campaign overrides."""
     sp = stem_patterns if stem_patterns is not None else STEM_PATTERNS
     lb = labels if labels is not None else LABELS
     folder = Path(folder)
@@ -183,7 +244,8 @@ def discover(folder, policy: str = "warn", stem_patterns=None, labels=None,
             _handle_unknown(f, f"label {label!r} not in LABELS", policy)
             continue
         info = lb[label]
-        matches.append(_Match(f, label, info["category"], ext, info))
+        cn = _probe_cloud_native(f, info["kind"], ext)
+        matches.append(_Match(f, label, info["category"], ext, info, cn))
 
     matches = _resolve_twins(matches, non_cloud_native)
 
@@ -195,15 +257,16 @@ def discover(folder, policy: str = "warn", stem_patterns=None, labels=None,
             raise ValueError(f"id collision: {item_id!r} from {seen_ids[item_id]} and {m.path.name}")
         seen_ids[item_id] = m.path.name
 
+        is_cog = m.info["kind"] == "raster" and m.cloud_native
         asset = Asset(
             path=m.path,
             label=m.label,
             category=m.category,
             kind=m.info["kind"],
             stac_roles=list(m.info["stac_roles"]),
-            media_type=m.info["media_type"],
+            media_type=COG_MEDIA_TYPE if is_cog else m.info["media_type"],
             extensions=list(m.info["extensions"]),
-            cloud_native=m.info["cloud_native"],
+            cloud_native=m.cloud_native,
         )
         base = m.path.name[: -len(m.ext)]
         asset.sidecars = [
@@ -215,6 +278,7 @@ def discover(folder, policy: str = "warn", stem_patterns=None, labels=None,
     return products
 
 
+# --- test functions ---
 def _print(products) -> None:
     print(f"\nproducts ({len(products)}):")
     for p in products:
@@ -226,22 +290,36 @@ def _print(products) -> None:
             print(f"      - {a.label}: {a.path.name}{cn}{sc}")
 
 
+def _write_raster(path: Path, cog: bool) -> None:
+    mem = gdal.GetDriverByName("MEM").Create("", 2, 2, 1)
+    out = gdal.GetDriverByName("COG" if cog else "GTiff").CreateCopy(str(path), mem)
+    out = None
+
+
 def _make_fixture(tmp: Path) -> None:
-    names = [
+    # rasters get real 2x2 px content so the probe runs for real: True = COG driver
+    rasters = {
+        "pielach_2023-02-08_DTM_etrs89_cog.tif": True,      # CN twin -> supersedes plain
+        "pielach_2023-02-08_DTM_etrs89.tif": False,         # non-CN twin -> superseded
+        "pielach_2023-02-08_DTM_masked_etrs89_cog.tif": True,  # variant -> own item
+        "pielach_2023-02-08_DTM_filled_etrs89_cog.tif": True,  # both-CN twin pair:
+        "pielach_2023-02-08_DTM_filled_etrs89.tif": True,      #   cog-named wins silently
+        "pielach_2023-02-08_DSM_filled_etrs89.tif": True,   # plain-named real COG -> CN, no warning
+        "pielach_2023-02-08_DSM_etrs89.tif": False,         # lone non-CN -> cataloged + warned
+        "pielach_2023-02-08_transparent_mosaic_cog.tif": True,  # orthophoto, flat
+    }
+    touched = [
         "tiles/pielach_2023-02-08_526000_534050.copc.laz",  # tile group "tiles"
         "tiles/pielach_2023-02-08_526500_534050.copc.laz",
-        "pielach_2023-02-08_DTM_etrs89_cog.tif",          # label dtm_cog
-        "pielach_2023-02-08_DTM_etrs89.tif",              # non-CN twin -> superseded
-        "pielach_2023-02-08_DTM_masked_etrs89_cog.tif",   # variant -> own item
-        "pielach_2023-02-08_DSM_etrs89.tif",              # lone non-CN -> cataloged + warned
         "pielach_2023-02-08_ground.laz",                  # lone non-CN pointcloud, flat
-        "pielach_2023-02-08_transparent_mosaic_cog.tif",  # label orthophoto_cog, flat
         "pielach_2023-02-08_DTM_etrs89_cog.tfw",          # sidecar
         "pielach_2023-02-08_DTM_etrs89_cog.prj",          # sidecar
         "campaign.yaml",                                  # per-campaign sidecar, never an asset
         "opalsLog.xml",                                   # stray
     ]
-    for n in names:
+    for n, cog in rasters.items():
+        _write_raster(tmp / n, cog)
+    for n in touched:
         p = tmp / n
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch()
@@ -272,7 +350,7 @@ if __name__ == "__main__":
             _print(products)
 
             by_id = {p.id: p for p in products}
-            assert len(products) == 7, sorted(by_id)
+            assert len(products) == 9, sorted(by_id)
             assert all(len(p.assets) == 1 for p in products)
 
             # variants ungrouped: DTM and DTM_masked are separate items
@@ -282,10 +360,22 @@ if __name__ == "__main__":
             # cog twin superseded the plain DTM: id keeps no cog token, asset is the COG
             dtm = by_id["pielach_2023-02-08_DTM_etrs89"].assets[0]
             assert dtm.path.name.endswith("_cog.tif") and dtm.cloud_native
+            assert dtm.media_type == COG_MEDIA_TYPE
             assert len(dtm.sidecars) == 2
 
-            # lone non-CN cataloged with warning; sidecar yaml never warned, strays still are
-            assert not by_id["pielach_2023-02-08_DSM_etrs89"].assets[0].cloud_native
+            # plain-named real COG probed CN, COG media type, no warning
+            dsm_filled = by_id["pielach_2023-02-08_DSM_filled_etrs89"].assets[0]
+            assert dsm_filled.cloud_native and dsm_filled.media_type == COG_MEDIA_TYPE
+            assert "DSM_filled" not in err
+
+            # both-CN twin pair: cog-named wins silently
+            dtm_filled = by_id["pielach_2023-02-08_DTM_filled_etrs89"].assets[0]
+            assert dtm_filled.path.name.endswith("_cog.tif") and dtm_filled.cloud_native
+            assert "DTM_filled" not in err
+
+            # lone non-CN cataloged with warning + plain media type; yaml never warned, strays are
+            dsm = by_id["pielach_2023-02-08_DSM_etrs89"].assets[0]
+            assert not dsm.cloud_native and dsm.media_type != COG_MEDIA_TYPE
             assert "pielach_2023-02-08_DSM_etrs89.tif" in err and "ground.laz" in err
             assert "campaign.yaml" not in err and "opalsLog.xml" in err
 
@@ -295,7 +385,7 @@ if __name__ == "__main__":
 
             # skip policy = old cloud-native-only rule
             skipped = discover(tmp, policy="skip", non_cloud_native="skip")
-            assert len(skipped) == 5
+            assert len(skipped) == 7
             assert all(a.cloud_native for p in skipped for a in p.assets)
 
             print("\ndiscover self-check ok")

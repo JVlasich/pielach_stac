@@ -32,7 +32,7 @@ DEFAULTS = {
     "outdir": None,
     "nbThreads": 1,
     "distribute": 1,
-    "tileSize_odm": 24.0,
+    "tileSize_odm": 22.0,
     "tmp_path": "./tmp",
     "pointOrigin": None,#"529000;5340000",
     "tileSize": 500,
@@ -63,7 +63,8 @@ def pretile(header, tmp_path: Path, nbThreads: int, pointOrigin: str | None, til
     pret.skipIfExists = True
     pret.tileSize = tileSize
     # infer pointorigin from bbox if not provided
-    pret.pointOrigin = pointOrigin if pointOrigin else f"{box.xmin};{box.ymin}"
+    # shift by half LAS resolution so quantized coords never sit exactly on tile edges (dupes)
+    pret.pointOrigin = pointOrigin if pointOrigin else f"{box.xmin - 0.0005};{box.ymin - 0.0005}"
     pret.nbThreads = nbThreads
     pret.fileLogLevel = Types.LogLevel.error
     pret.screenLogLevel = Types.LogLevel.error
