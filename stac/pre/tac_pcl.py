@@ -32,9 +32,9 @@ _COPCINDEX = "lascopcindex64" + (".exe" if os.name == "nt" else "") # linux incl
 DEFAULTS = {
     "infile": None,
     "outdir": None,
-    "nbThreads": 1,
-    "distribute": 1,
-    "tileSize_odm": 22.0,
+    "nbThreads": None,
+    "distribute": None,
+    "tileSize_odm": 20.0,
     "tmp_path": "./tmp",
     "pointOrigin": None,#"529000;5340000",
     "tileSize": 500,
@@ -52,7 +52,8 @@ def import_laz_file(infile: Path, tmp_path: Path, nbThreads: int, tileSize_odm: 
 
     imp = Import.Import()
     imp.inFile = str(infile)
-    imp.commons.nbThreads = nbThreads
+    if nbThreads:
+        imp.commons.nbThreads = nbThreads
     imp.outFile = str(odm_path)
     imp.tileSize = tileSize_odm
     imp.run()
@@ -68,7 +69,8 @@ def pretile(header, tmp_path: Path, nbThreads: int, pointOrigin: str | None, til
     # infer pointorigin from bbox if not provided
     # shift by half LAS resolution so quantized coords never sit exactly on tile edges (dupes)
     pret.pointOrigin = pointOrigin if pointOrigin else f"{box.xmin - 0.0005};{box.ymin - 0.0005}"
-    pret.nbThreads = nbThreads
+    if nbThreads:
+        pret.nbThreads = nbThreads
     pret.fileLogLevel = Types.LogLevel.error
     pret.screenLogLevel = Types.LogLevel.error
     pret.export = str(tmp_path)
@@ -85,8 +87,10 @@ def precut(infile: Path, buffer: int, export_dir: Path, nbThreads: int,
     prec.export = str(export_dir / infile.name)
     prec.skipIfExists = True
     prec.oformat = "<l v='4' p='6'/>"
-    prec.nbThreads = nbThreads
-    prec.distribute = distribute
+    if nbThreads:
+        prec.nbThreads = nbThreads
+    if distribute:
+        prec.distribute = distribute
     prec.fileLogLevel = Types.LogLevel.error
     prec.screenLogLevel = Types.LogLevel.error
     prec.run() # type: ignore
@@ -247,7 +251,7 @@ def process_one(infile: Path | str, cfg: dict, outdir: Path | str, tmp_root: Pat
 
 
 def main():
-    setup()
+    setup(verbose=True)
     namespace = "tile_and_convert_pcl"
     from ..core import config
     config.register_defaults(namespace, DEFAULTS)
@@ -291,6 +295,8 @@ def main():
 
     results = []          # (name, "ok" | error message)
     produced_odms = []
+
+    log.debug(f'nbThreads={cfg["nbThreads"]}\t distribute={cfg["distribute"]}')
 
     for idx, infile in enumerate(inputs, 1):
         log.info(f"\033[96m=== {infile.name} ({idx}/{len(inputs)}) ===\033[00m")

@@ -12,8 +12,8 @@ _file = {}      # namespace: dict
 _cli = {}       # namespace: dict
 
 _defaults[COMMONS] = {
-    "nbThreads": 1,
-    "distribute": 1,
+    "nbThreads": None,
+    "distribute": None,
     "tmp_path": "./tmp",
     "fileLogLevel": "error",    # error | info | warning
     "screenLogLevel": "error",
