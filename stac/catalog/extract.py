@@ -2,7 +2,7 @@
 """Two decorator-registries: Reader and Populator
 
 Readers return asset metadata
-Extensions map metadata to Extension fields"""
+Extensions map metadata to Extension fields (build.py)"""
 
 import hashlib
 import logging
@@ -17,6 +17,7 @@ from opals import Info
 from osgeo import gdal, osr
 
 gdal.UseExceptions()
+gdal.SetConfigOption("GDAL_PAM_ENABLED", "NO")  # no .aux.xml droppings next to assets
 log = logging.getLogger(__name__)
 
 
@@ -24,24 +25,33 @@ log = logging.getLogger(__name__)
 class AssetMeta:
     """Dataclass that holds all possible asset metadata.
     extractors will build their extension from these
-    
+
     To be expanded for the other extensions"""
+    # Pointcloud
     pc_count:      int                 | None = None
     pc_type:       str                 | None = None
     pc_density:    float               | None = None
     pc_schemas:    list[dict[str:Any]] = field(default_factory=list)
     pc_statistics: list[dict[str:Any]] = field(default_factory=list)
-    proj_wkt:      str                 | None = None
+    pc_gps_time_min:  float            | None = None  # raw, weekseconds or adjusted standard
+    pc_gps_time_max:  float            | None = None  # resolved to UTC in build (campaign date)
 
-    # raster (STAC 1.1 unified bands feed both raster + eo populators)
-    raster_bands:   list[dict[str:Any]] = field(default_factory=list)
+    # Projection metadata
+    proj_wkt:       str      | None = None
     proj_epsg:      int      | None = None
     proj_shape:     list     | None = None  # [height, width] (proj:shape order)
     proj_transform: list     | None = None  # STAC proj:transform order
     proj_bbox:      list     | None = None  # native CRS [minx, miny, maxx, maxy]
-    geometry_wgs84: dict     | None = None  # GeoJSON Polygon
-    bbox_wgs84:     list     | None = None
-    dt_processing:  datetime | None = None  # TIFFTAG_DATETIME, when the file was written
+
+    # raster (STAC 1.1 unified bands feed both raster + eo populators)
+    raster_bands:   list[dict[str:Any]] = field(default_factory=list)
+    raster_sampling: str     | None = None  # "area" | "point" (raster:sampling)
+    raster_spatial_resolution: float | None = None  # abs(gt[1]), square pixels assumed
+    dt_processing:  datetime     | None = None  # TIFFTAG_DATETIME, when the file was written
+
+    # General
+    geometry_wgs84: dict         | None = None  # GeoJSON Polygon
+    bbox_wgs84:     list         | None = None
 
 
 @dataclass
@@ -57,6 +67,27 @@ def _dtype_name(gdal_type: int) -> str:
     return "uint8" if name == "Byte" else name.lower()
 
 
+def _wgs84_footprint(srs, proj_bbox: list) -> tuple[dict, list]:
+    """Native CRS bbox -> WGS84 (GeoJSON polygon, bbox) via densified edge transform,
+    bundled GDAL 3.1 has no TransformBounds (3.4+)."""
+    wgs84 = osr.SpatialReference()
+    wgs84.ImportFromEPSG(4326)
+    wgs84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)  # lon,lat order
+    ct = osr.CoordinateTransformation(srs, wgs84)
+    n = 21
+    ex = [proj_bbox[0] + (proj_bbox[2] - proj_bbox[0]) * i / n for i in range(n + 1)]
+    ey = [proj_bbox[1] + (proj_bbox[3] - proj_bbox[1]) * i / n for i in range(n + 1)]
+    ring = ([(x, proj_bbox[1]) for x in ex] + [(x, proj_bbox[3]) for x in ex]
+            + [(proj_bbox[0], y) for y in ey] + [(proj_bbox[2], y) for y in ey])
+    pts = ct.TransformPoints(ring)
+    lons, lats = [p[0] for p in pts], [p[1] for p in pts]
+    lonmin, latmin, lonmax, latmax = min(lons), min(lats), max(lons), max(lats)
+    geometry = {"type": "Polygon", "coordinates": [[
+        [lonmin, latmin], [lonmax, latmin], [lonmax, latmax], [lonmin, latmax], [lonmin, latmin],
+    ]]}
+    return geometry, [lonmin, latmin, lonmax, latmax]
+
+
 def raster(path: str) -> AssetMeta:
     """Extracts relevant raster metadata using GDAL.
     Item datetime is campaign-driven and not read here; TIFFTAG_DATETIME is kept
@@ -69,41 +100,40 @@ def raster(path: str) -> AssetMeta:
         log.error(f"no CRS readable: {path}")
         raise ValueError(f"{path}: no CRS readable (check PROJ_LIB/GDAL_DATA)")
 
+    gt = ds.GetGeoTransform()
+    w, h = ds.RasterXSize, ds.RasterYSize
+
     bands = []
     for i in range(1, ds.RasterCount + 1):
         b = ds.GetRasterBand(i)
         minimum, maximum, mean, stddev = b.ComputeStatistics(False)
+        if b.GetMaskFlags() == gdal.GMF_ALL_VALID:
+            valid_percent, count = 100.0, w * h
+        else:
+            # mask mean / 255 assumes binary mask, partial alpha skews valid_percent
+            frac = b.GetMaskBand().ComputeStatistics(False)[2] / 255.0
+            valid_percent, count = frac * 100, round(frac * w * h)
+        nbits = b.GetMetadataItem("NBITS", "IMAGE_STRUCTURE")
         bands.append({
             "index":        i,
             "data_type":    _dtype_name(b.DataType),
             "nodata":       b.GetNoDataValue(),
             "color_interp": gdal.GetColorInterpretationName(b.GetColorInterpretation()).lower(),
-            "statistics":   {"minimum": minimum, "maximum": maximum, "mean": mean, "stddev": stddev},
+            "description":  b.GetDescription() or None,
+            "unit":         b.GetUnitType() or None,
+            "scale":        b.GetScale(),
+            "offset":       b.GetOffset(),
+            "bits_per_sample": int(nbits) if nbits else None,
+            "statistics":   {"minimum": minimum, "maximum": maximum, "mean": mean, "stddev": stddev,
+                             "valid_percent": valid_percent, "count": count},
         })
 
     # native bbox from geotransform corners (handles rotated rasters)
-    gt = ds.GetGeoTransform()
-    w, h = ds.RasterXSize, ds.RasterYSize
     xs = [gt[0], gt[0] + w * gt[1], gt[0] + h * gt[2], gt[0] + w * gt[1] + h * gt[2]]
     ys = [gt[3], gt[3] + w * gt[4], gt[3] + h * gt[5], gt[3] + w * gt[4] + h * gt[5]]
     proj_bbox = [min(xs), min(ys), max(xs), max(ys)]
 
-    wgs84 = osr.SpatialReference()
-    wgs84.ImportFromEPSG(4326)
-    wgs84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)  # lon,lat order
-    ct = osr.CoordinateTransformation(srs, wgs84)
-    # densified edge transform, bundled GDAL 3.1 has no TransformBounds (3.4+)
-    n = 21
-    ex = [proj_bbox[0] + (proj_bbox[2] - proj_bbox[0]) * i / n for i in range(n + 1)]
-    ey = [proj_bbox[1] + (proj_bbox[3] - proj_bbox[1]) * i / n for i in range(n + 1)]
-    ring = ([(x, proj_bbox[1]) for x in ex] + [(x, proj_bbox[3]) for x in ex]
-            + [(proj_bbox[0], y) for y in ey] + [(proj_bbox[2], y) for y in ey])
-    pts = ct.TransformPoints(ring)
-    lons, lats = [p[0] for p in pts], [p[1] for p in pts]
-    lonmin, latmin, lonmax, latmax = min(lons), min(lats), max(lons), max(lats)
-    geometry = {"type": "Polygon", "coordinates": [[
-        [lonmin, latmin], [lonmax, latmin], [lonmax, latmax], [lonmin, latmax], [lonmin, latmin],
-    ]]}
+    geometry, bbox_wgs84 = _wgs84_footprint(srs, proj_bbox)
 
     code = srs.GetAuthorityCode(None)
 
@@ -117,13 +147,15 @@ def raster(path: str) -> AssetMeta:
 
     return AssetMeta(
         raster_bands=bands,
+        raster_sampling=(ds.GetMetadataItem("AREA_OR_POINT") or "").lower() or None,
+        raster_spatial_resolution=abs(gt[1]),
         proj_epsg=int(code) if code else None,
         proj_wkt=srs.ExportToWkt(["FORMAT=WKT2_2019"]),
         proj_shape=[h, w],
         proj_transform=[gt[1], gt[2], gt[0], gt[4], gt[5], gt[3]],
         proj_bbox=proj_bbox,
         geometry_wgs84=geometry,
-        bbox_wgs84=[lonmin, latmin, lonmax, latmax],
+        bbox_wgs84=bbox_wgs84,
         dt_processing=dt,
     )
 
@@ -145,7 +177,7 @@ def pointcloud(path: str) -> AssetMeta:
 
     statistics = [
         {
-            "name":    a.getName(),
+            "name":    a.getName(),#.split()[0], # Names are doubled?
             "count":   a.getCount(),
             "minimum": a.getMin(),
             "maximum": a.getMax(),
@@ -162,13 +194,33 @@ def pointcloud(path: str) -> AssetMeta:
         } for a in attributes if a.getMin() != a.getMax()
     ]
 
+    # raw GPSTime, resolved to UTC in build; constant GPSTime is filtered out
+    gps = next((s for s in statistics if s["name"].startswith("GPSTime")), None)
+
+    wkt = stats.getCoordRefSys()
+    if not wkt:
+        log.error(f"no CRS readable: {path}")
+        raise ValueError(f"{path}: no CRS readable (check PROJ_LIB/GDAL_DATA)")
+    srs = osr.SpatialReference()
+    if srs.ImportFromWkt(wkt) != 0:
+        raise ValueError(f"{path}: invalid CRS WKT")
+
+    bb = stats.getBoundingBox()  # xmin, ymin, zmin, xmax, ymax, zmax
+    proj_bbox = [bb[0], bb[1], bb[3], bb[4]]
+    geometry, bbox_wgs84 = _wgs84_footprint(srs, proj_bbox)
+
     return AssetMeta(
         pc_count=stats.getPointCount(),
         pc_density=stats.getPointDensity(),
         pc_type="lidar", # hmmmmmm hardcoding
         pc_schemas=schemas,
         pc_statistics=statistics,
-        proj_wkt=stats.getCoordRefSys()
+        pc_gps_time_min=gps["minimum"] if gps else None,
+        pc_gps_time_max=gps["maximum"] if gps else None,
+        proj_wkt=wkt,
+        proj_bbox=proj_bbox,
+        geometry_wgs84=geometry,
+        bbox_wgs84=bbox_wgs84,
     )
 
 
@@ -219,6 +271,19 @@ if __name__ == "__main__":
 
     args = sys.argv[1:]
     target = Path(args[0]) if args else next(Path("data/sample_tif").rglob("*.tif"))
+
+    if target.name.lower().endswith((".laz", ".las")):
+        meta = pointcloud(target)
+        assert meta.pc_count, "no points"
+        lonmin, latmin, lonmax, latmax = meta.bbox_wgs84
+        assert -180 <= lonmin <= lonmax <= 180 and -90 <= latmin <= latmax <= 90, meta.bbox_wgs84
+        print(f"{target.name}: count={meta.pc_count} density={meta.pc_density:.2f}")
+        print(f"  bbox_wgs84={[round(v, 6) for v in meta.bbox_wgs84]}")
+        print(f"  gps_time min={meta.pc_gps_time_min} max={meta.pc_gps_time_max}")
+        print(f"  {meta.pc_statistics=}")
+        print("pointcloud self-check ok")
+        sys.exit(0)
+
     meta = raster(target)
 
     assert meta.raster_bands, "no bands extracted"
@@ -227,9 +292,14 @@ if __name__ == "__main__":
     assert -180 <= lonmin <= lonmax <= 180 and -90 <= latmin <= latmax <= 90, meta.bbox_wgs84
 
     print(f"{target.name}: epsg={meta.proj_epsg} shape={meta.proj_shape} dt={meta.dt_processing}")
+    print(f"  sampling={meta.raster_sampling} resolution={meta.raster_spatial_resolution}")
     print(f"  bbox_wgs84={[round(v, 6) for v in meta.bbox_wgs84]}")
     for b in meta.raster_bands:
         s = b["statistics"]
+        assert 0 <= s["valid_percent"] <= 100, s
         print(f"  band {b['index']} {b['data_type']} {b['color_interp']} nodata={b['nodata']} "
-              f"min={s['minimum']:.3f} max={s['maximum']:.3f} mean={s['mean']:.3f} std={s['stddev']:.3f}")
+              f"unit={b['unit']} scale={b['scale']} offset={b['offset']} nbits={b['bits_per_sample']} "
+              f"min={s['minimum']:.3f} max={s['maximum']:.3f} mean={s['mean']:.3f} std={s['stddev']:.3f} "
+              f"valid={s['valid_percent']:.1f}% count={s['count']}\n\n")
+        print("#"*100+"\n", meta)
     print("raster self-check ok")
