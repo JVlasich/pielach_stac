@@ -3,6 +3,8 @@ from typing import Callable
 import pystac
 from pystac.extensions.pointcloud import PointcloudExtension, Schema, SchemaType, Statistic
 
+import logging
+log = logging.getLogger(__name__)
 
 # maps the random int to the opals type and in turn to the stac type
 _STAC_SCHEMA_TYPE = {
