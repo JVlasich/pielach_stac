@@ -10,19 +10,21 @@ Requires: opals
 """
 
 import argparse
+import logging
 import os
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
+from ..core.log import setup
 from ..utils import io
 
 import opals
 from opals import Import, Types, pyDM
 from opals.workflows import preTiling, preCutting # concidering _import
 
-def prCyan(s): print("\033[96m {}\033[00m".format(s))
+log = logging.getLogger(__name__)
 
 _BIN = Path(__file__).resolve().parents[1] / "bin"   # src/pre/<mod> -> src/bin
 _COPCINDEX = "lascopcindex64" + (".exe" if os.name == "nt" else "") # linux inclusive :) not tested tho
@@ -45,6 +47,7 @@ DEFAULTS = {
 def import_laz_file(infile: Path, tmp_path: Path, nbThreads: int, tileSize_odm: float):
     odm_path = tmp_path / infile.with_suffix(".odm").name
     if odm_path.exists():
+        log.debug(f"ODM exists, skipping import: {odm_path.name}")
         return None
 
     imp = Import.Import()
@@ -106,10 +109,10 @@ def find_laz_needing_conversion(tile_tmp: Path, outdir: Path) -> list:
 
 def convert_to_copc(laz_files: list, tile_tmp: Path, odir: Path):
     if not laz_files:
-        print("All tiles already have COPC. Skipping conversion.")
+        log.info("All tiles already have COPC. Skipping conversion.")
         return
 
-    print(f"Converting {len(laz_files)} tile(s) to COPC...")
+    log.info(f"Converting {len(laz_files)} tile(s) to COPC...")
 
     lof_path = tile_tmp / "_convert_list.txt"
     lof_path.write_text(
@@ -222,17 +225,17 @@ def process_one(infile: Path | str, cfg: dict, outdir: Path | str, tmp_root: Pat
     os.chdir(str(work))
     try:
         # Import to ODM
-        print(f"Importing {infile.name} to ODM...")
+        log.info(f"Importing {infile.name} to ODM...")
         import_laz_file(infile, work, cfg["nbThreads"], cfg["tileSize_odm"])
         odm_path = work / infile.with_suffix(".odm").name
         header = pyDM.Datamanager.getHeaderODM(str(odm_path))
 
         # Create tile grid
-        print("Creating tile grid...")
+        log.info("Creating tile grid...")
         pretile(header, work, cfg["nbThreads"], cfg["pointOrigin"], cfg["tileSize"])
 
         # Cut tiles — LAZ goes to tile_tmp, not outdir
-        print("Cutting tiles...")
+        log.info("Cutting tiles...")
         precut(infile, cfg["buffer"], tile_tmp, cfg["nbThreads"], cfg["distribute"], work)
     finally:
         os.chdir(str(original_cwd))
@@ -244,6 +247,7 @@ def process_one(infile: Path | str, cfg: dict, outdir: Path | str, tmp_root: Pat
 
 
 def main():
+    setup()
     namespace = "tile_and_convert_pcl"
     from ..core import config
     config.register_defaults(namespace, DEFAULTS)
@@ -289,24 +293,24 @@ def main():
     produced_odms = []
 
     for idx, infile in enumerate(inputs, 1):
-        prCyan(f"\n=== {infile.name} ({idx}/{len(inputs)}) ===")
+        log.info(f"\033[96m=== {infile.name} ({idx}/{len(inputs)}) ===\033[00m")
         try:
             odm_path = process_one(infile, cfg, outdir_for(infile), tmp_path)
             produced_odms.append(odm_path)
             results.append((infile.name, "ok"))
         except Exception as e:
-            print(f"FAILED: {infile.name}: {e}", file=sys.stderr)
+            log.exception(f"FAILED: {infile.name}", stack_info=True)
             results.append((infile.name, str(e)))
 
     # Cleanup once at batch end
     if cfg.get("keeptmp"):
-        print("Keeping all temporary files.")
+        log.info("Keeping all temporary files.")
     elif cfg.get("keepodm"):
-        print("Cleaning temporary files but keeping ODM.")
+        log.info("Cleaning temporary files but keeping ODM.")
         for odm in produced_odms:
             io.clean_dir(str(odm.parent), [odm.name])
     else:
-        print("Cleaning all temporary files.")
+        log.info("Cleaning all temporary files.")
         io.clean_dir(str(tmp_path), [])
 
     if os.name == "nt":  # Windows beep on completion
@@ -315,9 +319,9 @@ def main():
 
     # Summary
     failed = [(n, m) for n, m in results if m != "ok"]
-    print(f"\nDone. {len(results) - len(failed)} ok, {len(failed)} failed.")
+    log.info(f"Done. {len(results) - len(failed)} ok, {len(failed)} failed.")
     for name, msg in failed:
-        print(f"  {name}: {msg}")
+        log.error(f"  {name}: {msg}")
     if failed:
         sys.exit(1)
 

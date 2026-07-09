@@ -1,6 +1,9 @@
-import sys
+import logging
+
 import yaml
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 COMMONS = "commons"
 
@@ -38,8 +41,9 @@ def load_config(path: Path) -> None:
             raise TypeError(f"Section '{ns}' in {path} must be a mapping, not {type(values).__name__}")
         for key in values:
             if key not in _defaults[ns]:
-                print(f"Warning: unknown key '{ns}.{key}' in {path}", file=sys.stderr)
+                log.warning(f"unknown key '{ns}.{key}' in {path}")
         _file.setdefault(ns, {}).update(values)
+    log.debug(f"loaded config from {path}")
 
 
 def merge_cli(namespace: str, cli_args) -> None:
@@ -82,4 +86,4 @@ def generate_template_config(namespace: str, path: Path) -> None:
         lines.append("")
 
     Path(path).write_text("\n".join(lines), encoding="utf-8")
-    print(f"Template config written to: {path}")
+    log.info(f"Template config written to: {path}")

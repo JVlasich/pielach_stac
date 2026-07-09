@@ -1,19 +1,24 @@
 """Convert LAZ input(s) to COPC without tiling."""
 import argparse
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
+from ..core.log import setup
 
 # importing tac_pcl pulls in opals at module load. Decouple if
 # convert-only must run without the OPALS stack installed. but thats work
 from .tac_pcl import resolve_inputs, _BIN, _COPCINDEX
+
+log = logging.getLogger(__name__)
 
 
 def to_copc(infile: Path, odir: Path) -> Path:
     """Index one LAZ to COPC in odir. lascopcindex returns nonzero on benign CRS warnings, so
     success is judged by the output existing, not the exit code."""
     out = odir / f"{infile.stem}.copc.laz"
+    log.debug(f"indexing {infile.name} -> {out.name}")
     subprocess.run([str(_BIN / _COPCINDEX), "-i", str(infile), "-odir", str(odir), "-progress"],
                    check=False)
     if not out.exists():
@@ -22,6 +27,7 @@ def to_copc(infile: Path, odir: Path) -> Path:
 
 
 def main():
+    setup()
     ap = argparse.ArgumentParser(description="Convert LAZ file(s) to COPC, no tiling.")
     ap.add_argument("--infile", nargs="+", required=True, help="LAZ file(s) and/or directories")
     ap.add_argument("--outdir", default=None,
@@ -34,20 +40,20 @@ def main():
         odir = Path(args.outdir).resolve() if args.outdir else f.parent
         odir.mkdir(parents=True, exist_ok=True)
         if (odir / f"{f.stem}.copc.laz").exists():   # idempotent: skip already-converted
-            print(f"skip (exists): {f.stem}.copc.laz")
+            log.info(f"skip (exists): {f.stem}.copc.laz")
             results.append((f.name, "ok"))
             continue
         try:
             to_copc(f, odir)
             results.append((f.name, "ok"))
         except Exception as e:
-            print(f"FAILED: {f.name}: {e}", file=sys.stderr)
+            log.exception(f"FAILED: {f.name}", stack_info=True)
             results.append((f.name, str(e)))
 
     failed = [(n, m) for n, m in results if m != "ok"]
-    print(f"\nDone. {len(results) - len(failed)} ok, {len(failed)} failed.")
+    log.info(f"Done. {len(results) - len(failed)} ok, {len(failed)} failed.")
     for name, msg in failed:
-        print(f"  {name}: {msg}")
+        log.error(f"  {name}: {msg}")
     if failed:
         sys.exit(1)
 

@@ -11,6 +11,7 @@ Requires: gdal
 """
 
 import argparse
+import logging
 import os
 import sys
 import textwrap
@@ -19,10 +20,11 @@ from pathlib import Path
 from osgeo import gdal
 
 from ..core import config
+from ..core.log import setup
 
 gdal.UseExceptions()
 
-def prCyan(s): print("\033[96m {}\033[00m".format(s))
+log = logging.getLogger(__name__)
 
 DEFAULTS = {
     "infile": None,
@@ -51,14 +53,14 @@ def cog_creation_options(cfg: dict) -> list:
 def convert_to_cog(infile: Path, out_path: Path, cfg: dict) -> bool:
     """Convert a whole raster to a single COG. Returns False if skipped."""
     if cfg["skipIfExists"] and out_path.exists():
-        print(f"  COG exists, skipping: {out_path.name}")
+        log.info(f"COG exists, skipping: {out_path.name}")
         return False
     gdal.Translate(
         str(out_path), str(infile),
         format="COG",
         creationOptions=cog_creation_options(cfg),
     )
-    print(f"  Wrote COG: {out_path.name}")
+    log.info(f"Wrote COG: {out_path.name}")
     return True
 
 
@@ -85,12 +87,13 @@ def tile_to_cog(infile: Path, tiles_dir: Path, cfg: dict) -> tuple:
             # skipped files are never written so mask is read again to check if theyre really empty
             # possible solution: write a .empty file that marks empty tiles that werent written
             if cfg["skipIfExists"] and out_path.exists():
-                print(f"  Tile exists, skipping: {out_path.name}")
+                log.debug(f"Tile exists, skipping: {out_path.name}")
                 skipped += 1
                 continue
 
             mask = mask_band.ReadAsArray(xoff, yoff, xsize, ysize)
             if mask is None or mask.max() == 0:
+                log.debug(f"Empty tile, skipping: {out_path.name}")
                 skipped += 1
                 continue  # entirely nodata / transparent, dont write
 
@@ -101,7 +104,7 @@ def tile_to_cog(infile: Path, tiles_dir: Path, cfg: dict) -> tuple:
                 creationOptions=creation_options,
             )
             written += 1
-            print(f"  Wrote {out_path.name}")
+            log.info(f"Wrote {out_path.name}")
 
     ds = None
     return written, skipped
@@ -202,18 +205,19 @@ def process_one(infile: Path | str, cfg: dict, inputs_count: int) -> None:
         else:                                           # multi: parent root
             tiles_dir = explicit / (infile.stem + "_tiles")
         tiles_dir.mkdir(parents=True, exist_ok=True)
-        print(f"  Tiling ({st_size / 1e9:.2f} GB) -> {tiles_dir}")
+        log.info(f"Tiling ({st_size / 1e9:.2f} GB) -> {tiles_dir}")
         written, skipped = tile_to_cog(infile, tiles_dir, cfg)
-        print(f"  {written} tiles written, {skipped} skipped.")
+        log.info(f"{written} tiles written, {skipped} skipped.")
     else:
         base = explicit if explicit else infile.parent
         base.mkdir(parents=True, exist_ok=True)
         out_path = base / (infile.stem + "_cog.tif")
-        print(f"  Converting ({st_size / 1e9:.2f} GB) -> {out_path}")
+        log.info(f"Converting ({st_size / 1e9:.2f} GB) -> {out_path}")
         convert_to_cog(infile, out_path, cfg)
 
 
 def main():
+    setup()
     namespace = "tac_raster"
     config.register_defaults(namespace, DEFAULTS)
 
@@ -243,12 +247,12 @@ def main():
 
     results = []          # (name, "ok" | error message)
     for idx, infile in enumerate(inputs, 1):
-        prCyan(f"\n=== {infile.name} ({idx}/{len(inputs)}) ===")
+        log.info(f"\033[96m=== {infile.name} ({idx}/{len(inputs)}) ===\033[00m")
         try:
             process_one(infile, cfg, len(inputs))
             results.append((infile.name, "ok"))
         except Exception as e:
-            print(f"FAILED: {infile.name}: {e}", file=sys.stderr)
+            log.exception(f"FAILED: {infile.name}", stack_info=True)
             results.append((infile.name, str(e)))
 
     if os.name == "nt":  # Windows beep on completion
@@ -257,9 +261,9 @@ def main():
 
     # Summary
     failed = [(n, m) for n, m in results if m != "ok"]
-    print(f"\nDone. {len(results) - len(failed)} ok, {len(failed)} failed.")
+    log.info(f"Done. {len(results) - len(failed)} ok, {len(failed)} failed.")
     for name, msg in failed:
-        print(f"  {name}: {msg}")
+        log.error(f"  {name}: {msg}")
     if failed:
         sys.exit(1)
 

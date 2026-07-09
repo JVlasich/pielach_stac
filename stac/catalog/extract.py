@@ -37,6 +37,12 @@ class AssetMeta:
     pc_gps_time_min:  float            | None = None  # raw, weekseconds or adjusted standard
     pc_gps_time_max:  float            | None = None  # resolved to UTC in build (campaign date)
 
+    # raster (STAC 1.1 unified bands feed both raster + eo populators)
+    raster_bands:   list[dict[str:Any]] = field(default_factory=list)
+    raster_sampling: str                | None = None  # "area" | "point" (raster:sampling)
+    raster_spatial_resolution: float    | None = None  # abs(gt[1]), square pixels assumed
+    dt_processing:  datetime            | None = None  # TIFFTAG_DATETIME, when the file was written
+
     # Projection metadata
     proj_wkt:       str      | None = None
     proj_epsg:      int      | None = None
@@ -44,15 +50,9 @@ class AssetMeta:
     proj_transform: list     | None = None  # STAC proj:transform order
     proj_bbox:      list     | None = None  # native CRS [minx, miny, maxx, maxy]
 
-    # raster (STAC 1.1 unified bands feed both raster + eo populators)
-    raster_bands:   list[dict[str:Any]] = field(default_factory=list)
-    raster_sampling: str     | None = None  # "area" | "point" (raster:sampling)
-    raster_spatial_resolution: float | None = None  # abs(gt[1]), square pixels assumed
-    dt_processing:  datetime     | None = None  # TIFFTAG_DATETIME, when the file was written
-
     # General
-    geometry_wgs84: dict         | None = None  # GeoJSON Polygon
-    bbox_wgs84:     list         | None = None
+    geometry_wgs84: dict     | None = None  # GeoJSON Polygon
+    bbox_wgs84:     list     | None = None
 
     def __repr__(self) -> str:
         def num(v):
@@ -142,6 +142,7 @@ def raster(path: str) -> AssetMeta:
     Item datetime is campaign-driven and not read here; TIFFTAG_DATETIME is kept
     only as the processing timestamp. Band statistics are exact (full scan).
     returns: AssetMeta object"""
+    log.debug(f"extracting raster metadata: {path}")
     ds = gdal.Open(str(path))
 
     srs = ds.GetSpatialRef()
@@ -213,6 +214,7 @@ def pointcloud(path: str) -> AssetMeta:
     """Extracts relevant pointcloud metadata using opalsInfo.
     Attributes are only extracted if they have more than one possible value.
     returns: AssetMeta object"""
+    log.debug(f"extracting pointcloud metadata: {path}")
     logLevel = opals.Types.LogLevel.none
     inf = Info.Info()
     inf.inFile = str(path)
@@ -295,7 +297,8 @@ def file_meta(p: Path | str) -> FileMeta:
                 hash_object.update(mm)
         hash = hash_object.hexdigest()
     except ValueError as e:
-        print(f"Error while computing hash for file: {p}, assets cannot be empty")
+        log.exception(f"Error while computing hash for file: {p}, assets cannot be empty",
+                      stack_info=True)
         raise e
 
     return FileMeta(size=size, mtime=mtime, sha256=hash)
@@ -318,6 +321,10 @@ _readers: dict[str, Callable] = {
 if __name__ == "__main__":
     import sys
 
+    from ..core.log import setup, test_raise
+
+    setup()
+
     args = sys.argv[1:]
     target = Path(args[0]) if args else next(Path("data/sample_tif").rglob("*.tif"))
 
@@ -326,11 +333,11 @@ if __name__ == "__main__":
         assert meta.pc_count, "no points"
         lonmin, latmin, lonmax, latmax = meta.bbox_wgs84
         assert -180 <= lonmin <= lonmax <= 180 and -90 <= latmin <= latmax <= 90, meta.bbox_wgs84
-        print(f"{target.name}: count={meta.pc_count} density={meta.pc_density:.2f}")
-        print(f"  bbox_wgs84={[round(v, 6) for v in meta.bbox_wgs84]}")
-        print(f"  gps_time min={meta.pc_gps_time_min} max={meta.pc_gps_time_max}")
-        print(f"  {meta.pc_statistics=}")
-        print("pointcloud self-check ok")
+        log.info(f"{target.name}: count={meta.pc_count} density={meta.pc_density:.2f}")
+        log.info(f"  bbox_wgs84={[round(v, 6) for v in meta.bbox_wgs84]}")
+        log.info(f"  gps_time min={meta.pc_gps_time_min} max={meta.pc_gps_time_max}")
+        log.debug(f"  {meta.pc_statistics=}")
+        log.info("pointcloud self-check ok")
         sys.exit(0)
 
     meta = raster(target)
@@ -340,15 +347,15 @@ if __name__ == "__main__":
     lonmin, latmin, lonmax, latmax = meta.bbox_wgs84
     assert -180 <= lonmin <= lonmax <= 180 and -90 <= latmin <= latmax <= 90, meta.bbox_wgs84
 
-    print(f"{target.name}: epsg={meta.proj_epsg} shape={meta.proj_shape} dt={meta.dt_processing}")
-    print(f"  sampling={meta.raster_sampling} resolution={meta.raster_spatial_resolution}")
-    print(f"  bbox_wgs84={[round(v, 6) for v in meta.bbox_wgs84]}")
+    log.info(f"{target.name}: epsg={meta.proj_epsg} shape={meta.proj_shape} dt={meta.dt_processing}")
+    log.info(f"  sampling={meta.raster_sampling} resolution={meta.raster_spatial_resolution}")
+    log.info(f"  bbox_wgs84={[round(v, 6) for v in meta.bbox_wgs84]}")
     for b in meta.raster_bands:
         s = b["statistics"]
         assert 0 <= s["valid_percent"] <= 100, s
-        print(f"  band {b['index']} {b['data_type']} {b['color_interp']} nodata={b['nodata']} "
-              f"unit={b['unit']} scale={b['scale']} offset={b['offset']} nbits={b['bits_per_sample']} "
-              f"min={s['minimum']:.3f} max={s['maximum']:.3f} mean={s['mean']:.3f} std={s['stddev']:.3f} "
-              f"valid={s['valid_percent']:.1f}% count={s['count']}\n\n")
-        print("#"*100+"\n", meta)
-    print("raster self-check ok")
+        log.info(f"  band {b['index']} {b['data_type']} {b['color_interp']} nodata={b['nodata']} "
+                 f"unit={b['unit']} scale={b['scale']} offset={b['offset']} nbits={b['bits_per_sample']} "
+                 f"min={s['minimum']:.3f} max={s['maximum']:.3f} mean={s['mean']:.3f} std={s['stddev']:.3f} "
+                 f"valid={s['valid_percent']:.1f}% count={s['count']}")
+        log.debug(f"\n{meta!r}")
+    log.info("raster self-check ok")

@@ -7,11 +7,14 @@ tile groups, associate sidecars, and route anything unclassifiable through
 unknown_asset_policy.
 """
 
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from osgeo import gdal
+
+log = logging.getLogger(__name__)
 
 try:  # optional, (pip install gdal-utils on GDAL < 3.2)
     from osgeo_utils.samples.validate_cloud_optimized_geotiff import validate as _validate_cog
@@ -114,14 +117,14 @@ def _probe_cloud_native(path: Path, kind: str, ext: str) -> bool:
     try:
         ds = gdal.Open(str(path))
     except RuntimeError as e:
-        print(f"WARN gdal open failed ({path.name}): {e}", file=sys.stderr)
+        log.warning(f"gdal open failed ({path.name}): {e}")
         return False
     if ds.GetMetadataItem("LAYOUT", "IMAGE_STRUCTURE") != "COG":
         return False
     if _validate_cog is not None:
         _, errors, _ = _validate_cog(str(path))
         if errors:
-            print(f"WARN invalid COG ({path.name}): {'; '.join(errors)}", file=sys.stderr)
+            log.warning(f"invalid COG ({path.name}): {'; '.join(errors)}")
     return True
 
 
@@ -156,6 +159,9 @@ def _resolve_twins(matches: list, policy: str) -> list:
     kept = []
     for members in buckets.values():
         winner = max(members, key=lambda m: (m.cloud_native, _cog_named(m)))
+        for m in members:
+            if m is not winner:
+                log.debug(f"superseded by twin {winner.path.name}: {m.path.name}")
         if winner.cloud_native:
             kept.append(winner)
             continue
@@ -163,7 +169,7 @@ def _resolve_twins(matches: list, policy: str) -> list:
         if policy == "raise":
             raise ValueError(f"{reason}: {winner.path.name}")
         if policy == "warn":
-            print(f"WARN {reason} ({winner.label}): {winner.path.name}", file=sys.stderr)
+            log.warning(f"{reason} ({winner.label}): {winner.path.name}")
             kept.append(winner)
         # skip: drop silently
     return kept
@@ -213,7 +219,7 @@ def _handle_unknown(path: Path, reason: str, policy: str) -> None:
     if policy == "raise":
         raise ValueError(f"unknown asset {path.name}: {reason}")
     if policy == "warn":
-        print(f"WARN skip ({reason}): {path.name}", file=sys.stderr)
+        log.warning(f"skip ({reason}): {path.name}")
     # skip: silent
 
 
@@ -275,19 +281,21 @@ def discover(folder, policy: str = "warn", stem_patterns=None, labels=None,
         products.append(Product(id=item_id, category=m.category, kind=m.info["kind"], assets=[asset]))
 
     _assign_tile_groups(products, folder)
+    log.debug(f"{len(files)} files -> {len(products)} products in {folder}")
     return products
 
 
 # --- test functions ---
-def _print(products) -> None:
-    print(f"\nproducts ({len(products)}):")
+def _report(products) -> None:
+    lines = [f"products ({len(products)}):"]
     for p in products:
         grp = f"  group={p.group}" if p.group else ""
-        print(f"  {p.id}  [{p.category}/{p.kind}]{grp}")
+        lines.append(f"  {p.id}  [{p.category}/{p.kind}]{grp}")
         for a in p.assets:
             cn = "" if a.cloud_native else "  (non-cloud-native)"
             sc = f"\n\t\tsidecars={[s.name for s in a.sidecars]}" if a.sidecars else ""
-            print(f"      - {a.label}: {a.path.name}{cn}{sc}")
+            lines.append(f"      - {a.label}: {a.path.name}{cn}{sc}")
+    log.info("\n".join(lines))
 
 
 def _write_raster(path: Path, cog: bool) -> None:
@@ -327,13 +335,14 @@ def _make_fixture(tmp: Path) -> None:
 
 # --- self-check ---
 if __name__ == "__main__":
+    from ..core.log import setup
 
+    setup()
 
     args = sys.argv[1:]
     if args:
-        _print(discover(Path(args[0])))
+        _report(discover(Path(args[0])))
     else:
-        import contextlib
         import io
         import shutil
         import tempfile
@@ -341,13 +350,17 @@ if __name__ == "__main__":
         tmp = Path(tempfile.mkdtemp(prefix="discover_fix_"))
         try:
             _make_fixture(tmp)
-            print(f"fixture: {tmp}")
+            log.info(f"fixture: {tmp}")
+            # capture warnings for the assertions below (logging bypasses redirect_stderr)
             buf = io.StringIO()
-            with contextlib.redirect_stderr(buf):
+            capture = logging.StreamHandler(buf)
+            logging.getLogger().addHandler(capture)
+            try:
                 products = discover(tmp, policy="warn")
+            finally:
+                logging.getLogger().removeHandler(capture)
             err = buf.getvalue()
-            print(err, file=sys.stderr, end="")
-            _print(products)
+            _report(products)
 
             by_id = {p.id: p for p in products}
             assert len(products) == 9, sorted(by_id)
@@ -388,6 +401,6 @@ if __name__ == "__main__":
             assert len(skipped) == 7
             assert all(a.cloud_native for p in skipped for a in p.assets)
 
-            print("\ndiscover self-check ok")
+            log.info("discover self-check ok")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

@@ -213,6 +213,13 @@ def _validate(stem_patterns, labels) -> None:
 # --- self-check ---
 
 if __name__ == "__main__":
+    import logging
+
+    from .log import setup
+
+    setup()
+    log = logging.getLogger(__name__)
+
     # pattern override replaces the entry, defaults the omitted keys, leaves siblings alone
     sp, lb = merge_overrides({"pointcloud": {"extensions": [".laz", ".las"]}}, {})
     assert sp["pointcloud"]["extensions"] == [".laz", ".las"]
@@ -231,10 +238,10 @@ if __name__ == "__main__":
         try:
             dummy = merge_overrides({}, {"x": incomplete}) if i == 0 else merge_overrides({"x": {}}, {})
         except ValueError as e:
-            print(f"expected this error: {e}, this is good")
+            log.info(f"expected this error: {e}, this is good")
 
     # no overrides -> copies equal to the originals
     sp, lb = merge_overrides(None, None)
     assert sp == STEM_PATTERNS and lb == LABELS
 
-    print("registry self-check ok")
+    log.info("registry self-check ok")
