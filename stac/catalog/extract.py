@@ -54,7 +54,7 @@ class AssetMeta:
     geometry_wgs84: dict     | None = None  # GeoJSON Polygon
     bbox_wgs84:     list     | None = None
 
-    def __repr__(self) -> str:
+    def __str__(self) -> str:
         def num(v):
             return "?" if v is None else (f"{v:,}" if isinstance(v, int) else f"{v:,.2f}")
 
@@ -215,12 +215,12 @@ def pointcloud(path: str) -> AssetMeta:
     Attributes are only extracted if they have more than one possible value.
     returns: AssetMeta object"""
     log.debug(f"extracting pointcloud metadata: {path}")
-    logLevel = opals.Types.LogLevel.none
+    logLevel = opals.Types.LogLevel.info
     inf = Info.Info()
     inf.inFile = str(path)
     inf.exactComputation = 1
     inf.commons.screenLogLevel = logLevel
-    inf.commons.fileLogLevel = logLevel
+    inf.commons.fileLogLevel = opals.Types.LogLevel.none
     inf.run()
 
     stats = inf.statistic[0]
@@ -357,5 +357,5 @@ if __name__ == "__main__":
                  f"unit={b['unit']} scale={b['scale']} offset={b['offset']} nbits={b['bits_per_sample']} "
                  f"min={s['minimum']:.3f} max={s['maximum']:.3f} mean={s['mean']:.3f} std={s['stddev']:.3f} "
                  f"valid={s['valid_percent']:.1f}% count={s['count']}")
-        log.debug(f"\n{meta!r}")
+        log.debug(f"\n{meta}")
     log.info("raster self-check ok")
