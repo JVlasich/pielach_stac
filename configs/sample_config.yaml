@@ -1,26 +1,32 @@
 # Configuration template. All values shown are defaults.
 # Uncomment and modify as needed. CLI args override values set here.
 
-commons:
-  # nbThreads: 1
-  # distribute: 1
-  # tmp_path: ./tmp
-  # fileLogLevel: error
-  # screenLogLevel: error
-  # keeptmp: false
+catalog:
+  # id: pielach
+  # title: Pielach River Topo-Bathymetric LiDAR Time Series
+  # description: Automated STAC catalog of the processed Pielach campaign datasets.
+  # root: null
+  # out: null
+  # stale: warn
+  # dryRun: false
+  # force: false
+  # validate: false
+  # unknownAssets: warn
+  # nonCloudNative: warn
+  # only: null
 
 tile_and_convert_pcl:
   # infile: null
   # outdir: null
-  # nbThreads: 1
-  # distribute: 1
-  # tileSize_odm: 24.0
+  # nbThreads: null
+  # distribute: null
+  # tileSize_odm: 20.0
   # tmp_path: ./tmp
   # pointOrigin: null
   # tileSize: 500
   # keepodm: true
   # buffer: 0
-  # keeptmp: null
+  # keeptmp: false
 
 tac_raster:
   # infile: null
@@ -31,5 +37,5 @@ tac_raster:
   # compress: DEFLATE
   # blockSize: 512
   # overviews: AUTO
-  # nbThreads: ALL_CPUS
+  # numThreads: ALL_CPUS
   # bigTiff: IF_SAFER
