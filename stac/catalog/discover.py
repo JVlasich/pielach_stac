@@ -14,14 +14,13 @@ from pathlib import Path
 
 from osgeo import gdal
 
+from ..core.registry import STEM_PATTERNS, LABELS, SIDECAR_EXTENSIONS
 log = logging.getLogger(__name__)
 
 try:  # optional, (pip install gdal-utils on GDAL < 3.2)
     from osgeo_utils.samples.validate_cloud_optimized_geotiff import validate as _validate_cog
 except ImportError:
     _validate_cog = None
-
-from ..core.registry import STEM_PATTERNS, LABELS, SIDECAR_EXTENSIONS
 
 gdal.UseExceptions()
 
@@ -313,7 +312,7 @@ def discover(folder: str | Path, policy_unknown: str = "warn", stem_patterns=Non
         asset.sidecars = [
             sc for sc in sidecars
             if sc.parent == m.path.parent
-            and sc.name[: -len(_sidecar_ext(sc.name))] in (base, m.path.name)
+            and sc.name[: -len(_sidecar_ext(sc.name) or "")] in (base, m.path.name)
         ]
         products.append(Product(id=item_id, category=m.category, kind=m.info["kind"], assets=[asset]))
 

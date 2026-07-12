@@ -52,7 +52,7 @@ def import_laz_file(infile: Path, tmp_path: Path, nbThreads: int, tileSize_odm: 
 
     imp = Import.Import()
     opals_log(imp)
-    imp.inFile = str(infile)
+    imp.inFile = str(infile)  # type: ignore
     if nbThreads:
         imp.commons.nbThreads = nbThreads
     imp.outFile = str(odm_path)
@@ -64,16 +64,16 @@ def import_laz_file(infile: Path, tmp_path: Path, nbThreads: int, tileSize_odm: 
 def pretile(header, tmp_path: Path, nbThreads: int, pointOrigin: str | None, tileSize: int):
     pret = preTiling.preTiling()
     box = header.getLimit()
-    pret.bbox = [box.xmin, box.ymin, box.xmax, box.ymax]
-    pret.skipIfExists = True
+    pret.bbox = [box.xmin, box.ymin, box.xmax, box.ymax]  # type: ignore
+    pret.skipIfExists = True  # type: ignore
     pret.tileSize = tileSize
     # infer pointorigin from bbox if not provided
     # shift by half LAS resolution so quantized coords never sit exactly on tile edges (dupes)
     pret.pointOrigin = pointOrigin if pointOrigin else f"{box.xmin - 0.0005};{box.ymin - 0.0005}"
     if nbThreads:
-        pret.nbThreads = nbThreads
+        pret.nbThreads = nbThreads  # type: ignore
     opals_log(pret)
-    pret.export = str(tmp_path)
+    pret.export = str(tmp_path)  # type: ignore
     pret.run() # type: ignore
     return pret
 
@@ -81,16 +81,16 @@ def pretile(header, tmp_path: Path, nbThreads: int, pointOrigin: str | None, til
 def precut(infile: Path, buffer: int, export_dir: Path, nbThreads: int,
            distribute: int, tmp_path: Path):
     prec = preCutting.preCutting()
-    prec.shapefile = str(tmp_path / "Tiles.shp")
-    prec.vector = str(tmp_path / infile.with_suffix(".odm").name)
+    prec.shapefile = str(tmp_path / "Tiles.shp")  # type: ignore
+    prec.vector = str(tmp_path / infile.with_suffix(".odm").name)  # type: ignore
     prec.buffer = buffer
-    prec.export = str(export_dir / infile.name)
-    prec.skipIfExists = True
+    prec.export = str(export_dir / infile.name)  # type: ignore
+    prec.skipIfExists = True  # type: ignore
     prec.oformat = "<l v='4' p='6'/>"
     if nbThreads:
-        prec.nbThreads = nbThreads
+        prec.nbThreads = nbThreads  # type: ignore
     if distribute:
-        prec.distribute = distribute
+        prec.distribute = distribute  # type: ignore
     opals_log(prec)
     prec.run() # type: ignore
     return prec

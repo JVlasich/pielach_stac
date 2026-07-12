@@ -7,6 +7,8 @@ STEM_PATTERNS entries (omitted require/forbid/extensions default to []).
 
 override merge, validation"""
 
+from typing import Any
+
 # stem_patterns: label -> match rule. split.("_") -> set -> match agaisnt required
 # {label: {"require": [], "forbid": [], "extensions": ""}}
 STEM_PATTERNS: dict[str, dict[str, object]] = {
@@ -78,7 +80,7 @@ STEM_PATTERNS: dict[str, dict[str, object]] = {
 
 
 # labels: label -> role definition
-LABELS: dict[str, dict[str, object]] = {
+LABELS: dict[str, dict[str, Any]] = {
     "pointcloud_copc": {
         "category":   "pointcloud",          # drives item-grouping + collection placement
         "kind":       "pcl",           # dispatches @reader  (pcl | raster)
@@ -190,8 +192,12 @@ def merge_overrides(patterns, labels):
     """Per-campaign overrides onto the defaults.
     Returns merged (stem_patterns, labels) copies
     the module globals are not mutated."""
-    sp = dict(STEM_PATTERNS); sp.update(patterns or {})
-    lb = dict(LABELS);        lb.update(labels or {})
+    sp = dict(STEM_PATTERNS)
+    sp.update(patterns or {})
+
+    lb = dict(LABELS)
+    lb.update(labels or {})
+
     _validate(sp, lb)
     return sp, lb
 

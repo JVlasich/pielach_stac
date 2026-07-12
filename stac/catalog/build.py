@@ -2,7 +2,7 @@
 import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 import pystac
 from pystac import Collection, Extent, Provider, Summaries
@@ -265,7 +265,7 @@ def _summarize(items) -> Summaries | None:
     return Summaries(out) if out else None
 
 
-def build_collection(cid: str, meta: dict, items: list, children: list = ()) -> Collection:
+def build_collection(cid: str, meta: dict, items: list, children: Sequence = ()) -> Collection:
     """Generic collection factory for campaign collections and tile subcollections.
     Extent + curated summaries derived from items + children's items. meta keys
     consumed: title, description, license, providers, keywords."""
