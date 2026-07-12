@@ -17,11 +17,11 @@ import sys
 import textwrap
 from pathlib import Path
 
-from ..core.log import setup
+from ..core.log import setup, opals_log
 from ..utils import io
 
-import opals
-from opals import Import, Types, pyDM
+#import opals
+from opals import Import, pyDM
 from opals.workflows import preTiling, preCutting # concidering _import
 
 log = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ DEFAULTS = {
     "tileSize": 500,
     "keepodm": True,
     "buffer": 0,
-    "keeptmp": None,
+    "keeptmp": False,
 }
 
 
@@ -51,6 +51,7 @@ def import_laz_file(infile: Path, tmp_path: Path, nbThreads: int, tileSize_odm: 
         return None
 
     imp = Import.Import()
+    opals_log(imp)
     imp.inFile = str(infile)
     if nbThreads:
         imp.commons.nbThreads = nbThreads
@@ -71,8 +72,7 @@ def pretile(header, tmp_path: Path, nbThreads: int, pointOrigin: str | None, til
     pret.pointOrigin = pointOrigin if pointOrigin else f"{box.xmin - 0.0005};{box.ymin - 0.0005}"
     if nbThreads:
         pret.nbThreads = nbThreads
-    pret.fileLogLevel = Types.LogLevel.error
-    pret.screenLogLevel = Types.LogLevel.error
+    opals_log(pret)
     pret.export = str(tmp_path)
     pret.run() # type: ignore
     return pret
@@ -91,8 +91,7 @@ def precut(infile: Path, buffer: int, export_dir: Path, nbThreads: int,
         prec.nbThreads = nbThreads
     if distribute:
         prec.distribute = distribute
-    prec.fileLogLevel = Types.LogLevel.error
-    prec.screenLogLevel = Types.LogLevel.error
+    opals_log(prec)
     prec.run() # type: ignore
     return prec
 
@@ -124,16 +123,19 @@ def convert_to_copc(laz_files: list, tile_tmp: Path, odir: Path):
         encoding="utf-8"
     )
 
+    # lascopcindex exits nonzero on benign CRS warnings while still writing the COPC,
+    # so success is judged by the outputs existing, not the exit code (like c_copc)
     subprocess.run([
         str(_BIN / _COPCINDEX),
         "-lof", str(lof_path),
         "-odir", str(odir),
         "-progress",
     ],
-        # Check true sometimes raises because of CRS issues with some files
-        # Copcfile still written, lascopcindex exits with 2
-        check=True
+        check=False
     )
+    missing = [f.name for f in laz_files if not (odir / (f.stem + ".copc.laz")).exists()]
+    if missing:
+        raise RuntimeError(f"lascopcindex produced no output for: {', '.join(missing)}")
 
     lof_path.unlink(missing_ok=True)
 
@@ -171,25 +173,16 @@ def build_parser() -> argparse.ArgumentParser:
         """)
     )
 
-    commons_cli = parser.add_argument_group("Common options")
-
-    commons_cli.add_argument("--nbThreads", type=int, default=None,
-                        help=f"Number of threads (default: {DEFAULTS['nbThreads']})")
-    commons_cli.add_argument("--distribute", type=int, default=None,
-                        help=f"Distribution factor (default: {DEFAULTS['distribute']})")
-    commons_cli.add_argument("--tmp_path", type=str, default=None,
-                        help=f"Temporary directory path (default: {DEFAULTS['tmp_path']})")
-    commons_cli.add_argument("--keeptmp", action=argparse.BooleanOptionalAction, default=None,
-                        help=f"Keep temporary files (default: False)")
-
     tac = parser.add_argument_group("Tile and Convert options")
-
 
     tac.add_argument("--config", type=str, default=None,
                         help="Path to YAML configuration file")
     tac.add_argument("--init", type=str, nargs="?", const="config.yaml", default=None, # "?" means 0 or 1 args
                         metavar="FILENAME",
                         help="Generate template config YAML and exit (default: config.yaml)")
+    tac.add_argument("--loglevel", type=str, choices=["warning", "info", "debug", "none"],
+                        default="info",
+                        help="Console log level, opals modules derive from it (default: info)")
 
     tac.add_argument("--infile", type=str, nargs="+", default=None,
                         help="Input LAZ file(s) and/or directories")
@@ -209,6 +202,14 @@ def build_parser() -> argparse.ArgumentParser:
     tac.add_argument("--keepodm", action=argparse.BooleanOptionalAction, default=None, # note to self: NO store_true
                         help=f"Keep intermediate ODM files (default: {DEFAULTS['keepodm']})")
 
+    tac.add_argument("--nbThreads", type=int, default=None,
+                        help=f"Number of threads (default: {DEFAULTS['nbThreads']})")
+    tac.add_argument("--distribute", type=int, default=None,
+                        help=f"Distribution factor (default: {DEFAULTS['distribute']})")
+    tac.add_argument("--tmp_path", type=str, default=None,
+                        help=f"Temporary directory path (default: {DEFAULTS['tmp_path']})")
+    tac.add_argument("--keeptmp", action=argparse.BooleanOptionalAction, default=None,
+                        help=f"Keep temporary files (default: {DEFAULTS['keeptmp']})")
 
     return parser
 
@@ -251,13 +252,13 @@ def process_one(infile: Path | str, cfg: dict, outdir: Path | str, tmp_root: Pat
 
 
 def main():
-    setup(verbose=True)
     namespace = "tile_and_convert_pcl"
     from ..core import config
     config.register_defaults(namespace, DEFAULTS)
 
     parser = build_parser()
     cli_args = parser.parse_args()
+    setup(cli_args.loglevel)
 
     # --init: generate template and exit
     if cli_args.init is not None:
@@ -274,8 +275,6 @@ def main():
     # Merge: CLI > config > defaults
     config.merge_cli(namespace, cli_args)
     cfg = config.section(namespace)
-    com = config.section("commons")
-    cfg.update(com)  # make commons keys accessible via cfg for convenience
 
     if cfg["infile"] is None:
         raise Exception("--infile is required (via CLI or config file)")

@@ -1,9 +1,9 @@
 """Default Registry
 
-Override merge ('config.yaml'): 'asset_overrides' (dict) merge per-label onto 'STEM_PATTERNS'
-order-irrelevant matches per set.
-'role_overrides' (dict) deep-merge per-label onto 'LABELS'.
-New labels may be defined entirely in 'role_overrides'.
+Per-campaign overrides ('campaign.yaml'): 'patterns' entries replace whole
+STEM_PATTERNS entries (omitted require/forbid/extensions default to []).
+'labels' entries replace whole LABELS entries and must carry all keys
+(see _validate TODO). New patterns/labels may be defined entirely in overrides.
 
 override merge, validation"""
 
@@ -166,15 +166,15 @@ LABELS: dict[str, dict[str, object]] = {
         "thumbnail":  False,
     },
 
-    # shades ignored?
-    # "shade":  { # unsure about this
-    #     "category":   "ignore",
-    #     "kind":       "raster",
-    #     "stac_roles": ["visual"],
-    #     "media_type": "image/tiff; application=geotiff; profile=cloud-optimized",
-    #     "extensions": ["raster", "projection", "file"],
-    #     "thumbnail":  False,
-    # },
+    # category "ignore" = discover matches then drops silently (derived viz, not a product)
+    "shade": {
+        "category":   "ignore",
+        "kind":       "raster",
+        "stac_roles": [],
+        "media_type": "image/tiff; application=geotiff",
+        "extensions": [],
+        "thumbnail":  False,
+    },
 }
 
 SIDECAR_EXTENSIONS = {".prj", ".tfw", ".aux.xml"}  # recognized, never an asset, never "unknown"
@@ -208,40 +208,3 @@ def _validate(stem_patterns, labels) -> None:
             # labels require all keys for now.
             # TODO: infer missing label keys at runtime instead of erroring.
             raise ValueError(f"label {key!r}: missing keys {missing}")
-
-
-# --- self-check ---
-
-if __name__ == "__main__":
-    import logging
-
-    from .log import setup
-
-    setup()
-    log = logging.getLogger(__name__)
-
-    # pattern override replaces the entry, defaults the omitted keys, leaves siblings alone
-    sp, lb = merge_overrides({"pointcloud": {"extensions": [".laz", ".las"]}}, {})
-    assert sp["pointcloud"]["extensions"] == [".laz", ".las"]
-    assert sp["pointcloud"]["require"] == [] and sp["pointcloud"]["forbid"] == []
-    assert sp["dtm"] == STEM_PATTERNS["dtm"] and sp["dsm"] == STEM_PATTERNS["dsm"]
-
-    # new label needs all keys; missing key or empty pattern raises
-    full = {"category": "pointcloud", "kind": "pcl", "stac_roles": ["data"],
-            "media_type": "application/vnd.laszip+copc",
-            "extensions": ["pointcloud", "projection", "file"], "thumbnail": True}
-    _, lb = merge_overrides({}, {"pointcloud": full})
-    assert lb["pointcloud"] == full
-    incomplete = {k: v for k, v in full.items() if k != "extensions"}
-
-    for i in range(2):
-        try:
-            dummy = merge_overrides({}, {"x": incomplete}) if i == 0 else merge_overrides({"x": {}}, {})
-        except ValueError as e:
-            log.info(f"expected this error: {e}, this is good")
-
-    # no overrides -> copies equal to the originals
-    sp, lb = merge_overrides(None, None)
-    assert sp == STEM_PATTERNS and lb == LABELS
-
-    log.info("registry self-check ok")

@@ -5,6 +5,7 @@ Readers return asset metadata
 Extensions map metadata to Extension fields (build.py)"""
 
 import hashlib
+import json
 import logging
 import mmap
 from dataclasses import dataclass, field
@@ -12,13 +13,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-import opals
 from opals import Info
-from osgeo import gdal, osr
+from osgeo import gdal, ogr, osr
+
+from ..core.log import opals_log
 
 osr.UseExceptions()
 gdal.UseExceptions()
-gdal.SetConfigOption("GDAL_PAM_ENABLED", "NO")  # no .aux.xml droppings next to assets
+gdal.SetConfigOption("GDAL_PAM_ENABLED", "NO")  # no .aux.xml next to assets
 log = logging.getLogger(__name__)
 
 
@@ -32,13 +34,13 @@ class AssetMeta:
     pc_count:      int                 | None = None
     pc_type:       str                 | None = None
     pc_density:    float               | None = None
-    pc_schemas:    list[dict[str:Any]] = field(default_factory=list)
-    pc_statistics: list[dict[str:Any]] = field(default_factory=list)
+    pc_schemas:    list[dict[str, Any]] = field(default_factory=list)
+    pc_statistics: list[dict[str, Any]] = field(default_factory=list)
     pc_gps_time_min:  float            | None = None  # raw, weekseconds or adjusted standard
     pc_gps_time_max:  float            | None = None  # resolved to UTC in build (campaign date)
 
     # raster (STAC 1.1 unified bands feed both raster + eo populators)
-    raster_bands:   list[dict[str:Any]] = field(default_factory=list)
+    raster_bands:   list[dict[str, Any]] = field(default_factory=list)
     raster_sampling: str                | None = None  # "area" | "point" (raster:sampling)
     raster_spatial_resolution: float    | None = None  # abs(gt[1]), square pixels assumed
     dt_processing:  datetime            | None = None  # TIFFTAG_DATETIME, when the file was written
@@ -137,10 +139,71 @@ def _wgs84_footprint(srs, proj_bbox: list) -> tuple[dict, list]:
     return geometry, [lonmin, latmin, lonmax, latmax]
 
 
+def _mask_footprint(ds, gt, srs, w: int, h: int) -> tuple[dict, list] | None:
+    """True data footprint from band 1's mask (nodata/alpha/internal): decimated
+    read, polygonize, simplify, reproject to WGS84. Returns (geometry, bbox) or
+    None when the raster is fully valid or the mask gives nothing usable —
+    caller keeps the bbox rectangle."""
+    band = ds.GetRasterBand(1)
+    if band.GetMaskFlags() == gdal.GMF_ALL_VALID:
+        return None
+    # cap the working grid at ~1024 px; footprint is approximate by nature
+    scale = max(1.0, max(w, h) / 1024)
+    bw, bh = max(1, round(w / scale)), max(1, round(h / scale))
+    mask = band.GetMaskBand().ReadAsArray(0, 0, w, h, buf_xsize=bw, buf_ysize=bh)
+    if mask is None:
+        return None
+    valid = mask > 0
+    if valid.all() or not valid.any():
+        return None  # rectangle is the truth / mask degenerate
+
+    mem = gdal.GetDriverByName("MEM").Create("", bw, bh, 1, gdal.GDT_Byte)
+    sx, sy = w / bw, h / bh
+    mem.SetGeoTransform((gt[0], gt[1] * sx, gt[2] * sy, gt[3], gt[4] * sx, gt[5] * sy))
+    mem.GetRasterBand(1).WriteArray(valid.astype("uint8") * 255)
+
+    vds = ogr.GetDriverByName("Memory").CreateDataSource("")
+    lyr = vds.CreateLayer("footprint", srs=srs)
+    # mask arg = the band itself, so only valid regions become polygons
+    gdal.Polygonize(mem.GetRasterBand(1), mem.GetRasterBand(1), lyr, -1)
+    geom = ogr.Geometry(ogr.wkbMultiPolygon)
+    for feat in lyr:
+        g = feat.GetGeometryRef()
+        if g is not None:
+            geom.AddGeometry(g.Clone())
+    if geom.IsEmpty():
+        return None
+    geom = geom.UnionCascaded()
+
+    # speck polygons are mask noise; stair vertices are decimation artifacts.
+    # 3-pixel tolerance keeps the corridor shape and the item JSON small.
+    px = abs(gt[1]) * sx
+    parts = ([geom] if geom.GetGeometryName() == "POLYGON"
+             else [geom.GetGeometryRef(i) for i in range(geom.GetGeometryCount())])
+    keep = ogr.Geometry(ogr.wkbMultiPolygon)
+    for part in parts:
+        if part.GetArea() >= (3 * px) ** 2:
+            keep.AddGeometry(part.Clone())
+    geom = keep
+    if geom.IsEmpty():
+        return None
+    geom = geom.SimplifyPreserveTopology(3 * px)
+    if geom is None or geom.IsEmpty():
+        return None
+
+    wgs84 = osr.SpatialReference()
+    wgs84.ImportFromEPSG(4326)
+    wgs84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    geom.Transform(osr.CoordinateTransformation(srs, wgs84))
+    minx, maxx, miny, maxy = geom.GetEnvelope()
+    return json.loads(geom.ExportToJson()), [minx, miny, maxx, maxy]
+
+
 def raster(path: str) -> AssetMeta:
     """Extracts relevant raster metadata using GDAL.
     Item datetime is campaign-driven and not read here; TIFFTAG_DATETIME is kept
     only as the processing timestamp. Band statistics are exact (full scan).
+    geometry = mask-derived footprint, bbox rectangle fallback.
     returns: AssetMeta object"""
     log.debug(f"extracting raster metadata: {path}")
     ds = gdal.Open(str(path))
@@ -184,6 +247,13 @@ def raster(path: str) -> AssetMeta:
     proj_bbox = [min(xs), min(ys), max(xs), max(ys)]
 
     geometry, bbox_wgs84 = _wgs84_footprint(srs, proj_bbox)
+    try:
+        fp = _mask_footprint(ds, gt, srs, w, h)
+    except Exception as e:
+        log.warning(f"footprint failed, keeping bbox rectangle ({path}): {e}")
+        fp = None
+    if fp:
+        geometry, bbox_wgs84 = fp
 
     code = srs.GetAuthorityCode(None)
 
@@ -215,38 +285,38 @@ def pointcloud(path: str) -> AssetMeta:
     Attributes are only extracted if they have more than one possible value.
     returns: AssetMeta object"""
     log.debug(f"extracting pointcloud metadata: {path}")
-    logLevel = opals.Types.LogLevel.info
     inf = Info.Info()
     inf.inFile = str(path)
     inf.exactComputation = 1
-    inf.commons.screenLogLevel = logLevel
-    inf.commons.fileLogLevel = opals.Types.LogLevel.none
+    opals_log(inf)
     inf.run()
 
     stats = inf.statistic[0]
     attributes = stats.getAttributes()
 
+    # getName() returns "short long", split()[0] keeps the short name
     statistics = [
         {
-            "name":    a.getName(),#.split()[0], # Names are doubled?
+            "name":    a.getName().split()[0],
             "count":   a.getCount(),
             "minimum": a.getMin(),
             "maximum": a.getMax(),
             "average": a.getMean(),
             "stddev":  a.getStd(),
-        } for a in attributes if a.getMin() != a.getMax()
+        } for a in attributes if a.getMin() != a.getMax()  # constant dims carry no signal
     ]
 
+    # schemas list every dimension the file has, unfiltered (pc:schemas = truth)
     schemas = [
         {
-            "name":a.getName(),
-            "size":a.getStorageSize(),
-            "type":a.getType() # DM::ColumnType int mapped in build.py
-        } for a in attributes if a.getMin() != a.getMax()
+            "name": a.getName().split()[0],
+            "size": a.getStorageSize(),
+            "type": a.getType()  # DM::ColumnType int mapped in build.py
+        } for a in attributes # constant dimns are still extracted
     ]
 
     # raw GPSTime, resolved to UTC in build; constant GPSTime is filtered out
-    gps = next((s for s in statistics if s["name"].startswith("GPSTime")), None)
+    gps = next((s for s in statistics if s["name"] == "GPSTime"), None)
 
     wkt = stats.getCoordRefSys()
     if not wkt:
@@ -255,6 +325,15 @@ def pointcloud(path: str) -> AssetMeta:
     srs = osr.SpatialReference()
     if srs.ImportFromWkt(wkt) != 0:
         raise ValueError(f"{path}: invalid CRS WKT")
+
+    # EPSG attempt so pointcloud items get proj:code like rasters do
+    code = srs.GetAuthorityCode(None)
+    if code is None:
+        try:
+            if srs.AutoIdentifyEPSG() == 0:
+                code = srs.GetAuthorityCode(None)
+        except RuntimeError:
+            pass  # exotic/compound CRS without a match, wkt2 still carries it
 
     bb = stats.getBoundingBox()  # xmin, ymin, zmin, xmax, ymax, zmax
     proj_bbox = [bb[0], bb[1], bb[3], bb[4]]
@@ -268,6 +347,7 @@ def pointcloud(path: str) -> AssetMeta:
         pc_statistics=statistics, # gpstime duplicate here
         pc_gps_time_min=gps["minimum"] if gps else None,
         pc_gps_time_max=gps["maximum"] if gps else None,
+        proj_epsg=int(code) if code else None,
         proj_wkt=wkt,
         proj_bbox=proj_bbox,
         geometry_wgs84=geometry,
@@ -280,8 +360,7 @@ def file_meta(p: Path | str) -> FileMeta:
     Used in idempotency pipeline to reduce runtime
     by only calling other readers if changes are detected"""
     # checks
-    if isinstance(p, str):
-        p = Path(p)
+    p = Path(p)
     if not (p.exists() and p.is_file()):
         raise ValueError("Path doesnt exist or is not a file")
 
@@ -321,7 +400,7 @@ _readers: dict[str, Callable] = {
 if __name__ == "__main__":
     import sys
 
-    from ..core.log import setup, test_raise
+    from ..core.log import setup
 
     setup()
 
@@ -331,9 +410,13 @@ if __name__ == "__main__":
     if target.name.lower().endswith((".laz", ".las")):
         meta = pointcloud(target)
         assert meta.pc_count, "no points"
+        # schemas = every dim (unfiltered), stats subset, short names only
+        schema_names = {s["name"] for s in meta.pc_schemas}
+        assert {s["name"] for s in meta.pc_statistics} <= schema_names
+        assert all(" " not in n for n in schema_names), schema_names
         lonmin, latmin, lonmax, latmax = meta.bbox_wgs84
         assert -180 <= lonmin <= lonmax <= 180 and -90 <= latmin <= latmax <= 90, meta.bbox_wgs84
-        log.info(f"{target.name}: count={meta.pc_count} density={meta.pc_density:.2f}")
+        log.info(f"{target.name}: count={meta.pc_count} density={meta.pc_density:.2f} epsg={meta.proj_epsg}")
         log.info(f"  bbox_wgs84={[round(v, 6) for v in meta.bbox_wgs84]}")
         log.info(f"  gps_time min={meta.pc_gps_time_min} max={meta.pc_gps_time_max}")
         log.debug(f"  {meta.pc_statistics=}")

@@ -27,12 +27,14 @@ def to_copc(infile: Path, odir: Path) -> Path:
 
 
 def main():
-    setup()
     ap = argparse.ArgumentParser(description="Convert LAZ file(s) to COPC, no tiling.")
     ap.add_argument("--infile", nargs="+", required=True, help="LAZ file(s) and/or directories")
     ap.add_argument("--outdir", default=None,
                     help="Output dir (default: beside each input)")
+    ap.add_argument("--loglevel", choices=["warning", "info", "debug", "none"], default="info",
+                    help="Console log level (default: info)")
     args = ap.parse_args()
+    setup(args.loglevel)
 
     inputs = resolve_inputs(args.infile)
     results = []

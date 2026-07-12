@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pielach-stac"
+version = "0.1.0"
+description = "Idempotent static STAC 1.1 catalog pipeline for the Pielach topo-bathymetric LiDAR time series"
+requires-python = ">=3.10"
+# GDAL and OPALS come from the environment (OSGeo / opals install), not pip
+dependencies = [
+    "pystac>=1.10",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+validation = ["pystac[validation]"]
+dev = ["pytest"]
+
+[project.scripts]
+pielach-catalog = "stac.core.cli:main"
+tac-raster = "stac.pre.tac_raster:main"
+tac-pcl = "stac.pre.tac_pcl:main"
+c-copc = "stac.pre.c_copc:main"
+
+[tool.setuptools.packages.find]
+include = ["stac*"]

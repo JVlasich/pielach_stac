@@ -5,20 +5,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-COMMONS = "commons"
-
 _defaults = {}  # namespace: dict
 _file = {}      # namespace: dict
 _cli = {}       # namespace: dict
-
-_defaults[COMMONS] = {
-    "nbThreads": None,
-    "distribute": None,
-    "tmp_path": "./tmp",
-    "fileLogLevel": "error",    # error | info | warning
-    "screenLogLevel": "error",
-    "keeptmp": False,
-}
 
 
 def register_defaults(namespace: str, defaults: dict) -> None:
@@ -47,15 +36,13 @@ def load_config(path: Path) -> None:
 
 
 def merge_cli(namespace: str, cli_args) -> None:
-    """Route non-None CLI args into the cli layer. Commons keys go to the commons namespace."""
+    """Route non-None CLI args into the cli layer. loglevel is CLI-only, never a config key."""
     if namespace not in _defaults:
         raise KeyError(f"unregistered namespace {namespace!r}")
-    commons_keys = set(_defaults[COMMONS])
     for key, value in vars(cli_args).items():
-        if key in ("config", "init") or value is None:
+        if key in ("config", "init", "loglevel") or value is None:
             continue
-        target = COMMONS if key in commons_keys else namespace
-        _cli.setdefault(target, {})[key] = value
+        _cli.setdefault(namespace, {})[key] = value
 
 
 def section(namespace: str) -> dict:
@@ -70,7 +57,7 @@ def section(namespace: str) -> dict:
 
 
 def generate_template_config(namespace: str, path: Path) -> None:
-    """Write a commented YAML template of commons + the given namespace's defaults."""
+    """Write a commented YAML template of the given namespace's defaults."""
     if namespace not in _defaults:
         raise KeyError(f"Namespace '{namespace}' not registered")
 
@@ -78,12 +65,11 @@ def generate_template_config(namespace: str, path: Path) -> None:
         "# Configuration template. All values shown are defaults.",
         "# Uncomment and modify as needed. CLI args override values set here.",
         "",
+        f"{namespace}:",
     ]
-    for ns in (COMMONS, namespace):
-        lines.append(f"{ns}:")
-        body = yaml.safe_dump(_defaults[ns], sort_keys=False).splitlines()
-        lines += [f"  # {line}" for line in body]
-        lines.append("")
+    body = yaml.safe_dump(_defaults[namespace], sort_keys=False).splitlines()
+    lines += [f"  # {line}" for line in body]
+    lines.append("")
 
     Path(path).write_text("\n".join(lines), encoding="utf-8")
     log.info(f"Template config written to: {path}")

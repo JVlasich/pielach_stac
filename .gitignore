@@ -1,15 +1,21 @@
 nogit/
 academic/
 env/
+env_linux/
 .vscode/
+.idea/
 bachelor.code-workspace
+notebooks/
 
 **/__pycache__
 **/.claude
 **/opalsLog*
 **/opalsError*
-**/.ipynb*
 **/tmp*
+**/*.ipynb*
+**/*.egg*
+**/*.odm
+**/.pytest_cache
 
 *CLAUDE.md
 *.yaml

@@ -1,14 +1,14 @@
 # CLI / Config resolver   (cli.py + config.py)
-#         │ project.yml (nested) + flat knobs + CLI overrides
+#         │ config.yaml (namespaced) + campaign.yaml sidecars + CLI overrides
 #         ▼
-# Layer 1  Discovery + Extraction   (discovery.py, registry.py, extract.py)
+# Layer 1  Discovery + Extraction   (discover.py, registry.py, extract.py)
 #    walk → matcher → (label, category, kind, roles, media_type, extensions)
-#    group by (stem, category); associate sidecars by full basename
+#    twin resolve + tile groups; associate sidecars (same dir, stem or full-name form)
 #    @reader(kind) does I/O once → AssetMeta; @populator(ext) maps AssetMeta → pystac
 #         ▼
 # Layer 2  Item + Collection builder   (build.py, hierarchy.py)
-#    one Item per (stem, category); enable extensions; build ids/datetime/geometry
-#    placement resolver: Item → placement-path in the tree
+#    one Item per Product; enable extensions; build ids/datetime/geometry
+#    placement resolver: Product → flat node / group nodes
 #         ▼
 # Layer 3  Catalog manager   (manager.py)
-#    load existing (extend mode) → merge by id → recompute extents/summaries → write
+#    load existing → gate by id (size+hash) → build/reuse → stale sweep → write

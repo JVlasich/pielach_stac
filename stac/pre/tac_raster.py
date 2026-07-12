@@ -155,6 +155,9 @@ def build_parser() -> argparse.ArgumentParser:
     tac.add_argument("--init", type=str, nargs="?", const="config.yaml", default=None,
                         metavar="FILENAME",
                         help="Generate template config YAML and exit (default: config.yaml)")
+    tac.add_argument("--loglevel", type=str, choices=["warning", "info", "debug", "none"],
+                        default="info",
+                        help="Console log level (default: info)")
 
     tac.add_argument("--infile", type=str, nargs="+", default=None,
                         help="Input GeoTIFF file(s) and/or directories")
@@ -217,12 +220,12 @@ def process_one(infile: Path | str, cfg: dict, inputs_count: int) -> None:
 
 
 def main():
-    setup()
     namespace = "tac_raster"
     config.register_defaults(namespace, DEFAULTS)
 
     parser = build_parser()
     cli_args = parser.parse_args()
+    setup(cli_args.loglevel)
 
     # --init: generate template and exit
     if cli_args.init is not None:
