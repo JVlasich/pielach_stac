@@ -1,5 +1,6 @@
 nogit/
 academic/
+data/
 env/
 env_linux/
 .vscode/
@@ -20,5 +21,6 @@ notebooks/
 *CLAUDE.md
 *.yaml
 *.yml
+*.txt
 
 !configs/**/*.yaml
