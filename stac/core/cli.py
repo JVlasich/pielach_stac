@@ -11,7 +11,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from ..catalog import manager
+from ..catalog import extract, manager
 from ..core import config
 from ..core.log import setup
 
@@ -49,7 +49,6 @@ def build_parser() -> argparse.ArgumentParser:
     cat.add_argument("--force", action=argparse.BooleanOptionalAction, default=None,
                      help="Skip the idempotency gate, rebuild every item (use after registry/code changes)")
 
-
     pol = parser.add_argument_group("Policy options")
 
     pol.add_argument("--stale", type=str, choices=["warn", "remove", "raise"], default=None,
@@ -65,6 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Discover + gate only, report counts, write nothing")
     deb.add_argument("--validate", action=argparse.BooleanOptionalAction, default=None,
                      help="STAC-validate the catalog after saving (needs pystac[validation])")
+
+    inf = parser.add_argument_group("OpalsInfo options")
+
+    inf.add_argument("--nbThreads", type=int, default=None,
+                     help="Thread count for opals modules (default: opals default, all CPUs)")
+    inf.add_argument("--exactComputation", action=argparse.BooleanOptionalAction, default=None,
+                     help="Exact point statistics via full scan; --no-exactComputation reads headers only: "
+                          "no pc:statistics, item datetime falls back to campaign date (default: on)")
 
     return parser
 
@@ -88,6 +95,9 @@ def main():
     # Merge: CLI > config > defaults
     config.merge_cli(NAMESPACE, cli_args)
     cfg = config.section(NAMESPACE)
+
+    extract.OPALS_INFO["nbThreads"] = cfg["nbThreads"]
+    extract.OPALS_INFO["exactComputation"] = cfg["exactComputation"]
 
     if cfg["root"] is None:
         parser.error("root is required (positional arg or config file)")

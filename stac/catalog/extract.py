@@ -7,6 +7,7 @@ Extensions map metadata to Extension fields (build.py)"""
 import hashlib
 import json
 import logging
+import math
 import mmap
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,6 +23,9 @@ osr.UseExceptions()
 gdal.UseExceptions()
 gdal.SetConfigOption("GDAL_PAM_ENABLED", "NO")  # no .aux.xml next to assets
 log = logging.getLogger(__name__)
+
+# set by cli after config merge; nbThreads None = opals default (all CPUs)
+OPALS_INFO = {"nbThreads": None, "exactComputation": True}
 
 
 @dataclass
@@ -287,7 +291,9 @@ def pointcloud(path: str) -> AssetMeta:
     log.debug(f"extracting pointcloud metadata: {path}")
     inf = Info.Info()
     inf.inFile = str(path)
-    inf.exactComputation = 1
+    inf.exactComputation = int(OPALS_INFO["exactComputation"])
+    if OPALS_INFO["nbThreads"]:
+        inf.commons.nbThreads = OPALS_INFO["nbThreads"]
     opals_log(inf)
     inf.run()
 
@@ -339,9 +345,10 @@ def pointcloud(path: str) -> AssetMeta:
     proj_bbox = [bb[0], bb[1], bb[3], bb[4]]
     geometry, bbox_wgs84 = _wgs84_footprint(srs, proj_bbox)
 
+    density = stats.getPointDensity()
     return AssetMeta(
         pc_count=stats.getPointCount(),
-        pc_density=stats.getPointDensity(),
+        pc_density=None if math.isnan(density) else density,  # nan when exactComputation off
         pc_type="lidar", # hmmmmmm hardcoding
         pc_schemas=schemas,
         pc_statistics=statistics, # gpstime duplicate here

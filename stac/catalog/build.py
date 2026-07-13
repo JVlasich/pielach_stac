@@ -265,13 +265,26 @@ def _summarize(items) -> Summaries | None:
     return Summaries(out) if out else None
 
 
+# id consumed upstream in manager.process_campaign
+_COLLECTION_META_KEYS = {"id", "title", "description", "license", "providers", "keywords"}
+
+
 def build_collection(cid: str, meta: dict, items: list, children: Sequence = ()) -> Collection:
     """Generic collection factory for campaign collections and tile subcollections.
     Extent + curated summaries derived from items + children's items. meta keys
-    consumed: title, description, license, providers, keywords."""
+    consumed: title, description, license, providers, keywords. providers accepts
+    the STAC list form or a name-keyed mapping."""
     all_items = list(items) + [i for c in children for i in c.get_items(recursive=True)]
     if not all_items:
         raise ValueError(f"collection {cid!r} would be empty")
+
+    unknown = set(meta) - _COLLECTION_META_KEYS
+    if unknown:
+        log.warning(f"collection {cid}: ignored unknown sidecar keys: {sorted(unknown)}")
+
+    providers = meta.get("providers") or []
+    if isinstance(providers, dict):  # name-as-key convenience form
+        providers = [{"name": name, **(spec or {})} for name, spec in providers.items()]
 
     coll = Collection(
         id=cid,
@@ -279,7 +292,7 @@ def build_collection(cid: str, meta: dict, items: list, children: Sequence = ())
         description=meta.get("description") or meta.get("title") or cid,
         extent=Extent.from_items(all_items),
         license=meta.get("license") or "other",
-        providers=[Provider.from_dict(p) for p in meta.get("providers") or []] or None,
+        providers=[Provider.from_dict(p) for p in providers] or None,
         keywords=meta.get("keywords"),
         summaries=_summarize(all_items),
     )

@@ -27,6 +27,11 @@ rem harvest the opalsShell environment (PATH, PYTHONPATH, GDAL_DATA, PROJ_LIB)
 rem "rem" argument skips the interactive shell -> returns control here
 call "%OPALS_ROOT%\opalsShell.bat" rem
 
+rem opalsShell should set these; force them so CRS reads never silently break
+set "GDAL_DATA=%OPALS_ROOT%\addons\crs"
+set "PROJ_LIB=%OPALS_ROOT%\addons\crs"
+set "PROJ_DATA=%OPALS_ROOT%\addons\crs"
+
 rem put repo code + vendored deps on PYTHONPATH
 set "PYTHONPATH=%REPO%;%REPO%\libs;%PYTHONPATH%"
 

@@ -32,6 +32,8 @@ CATALOG_DEFAULTS = {
     "unknownAssets": "warn", # warn | skip | raise for unclassifiable files
     "nonCloudNative": "warn",# warn | skip | raise for files without a CN twin
     "only": None,            # glob over campaign dir names; skips the stale-collection sweep
+    "nbThreads": None,       # opals thread count, None = opals default (all CPUs)
+    "exactComputation": True,# exact point statistics (full scan) vs header-only (fast, no stats)
 }
 config.register_defaults("catalog", CATALOG_DEFAULTS)
 
