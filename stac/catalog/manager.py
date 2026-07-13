@@ -40,7 +40,7 @@ config.register_defaults("catalog", CATALOG_DEFAULTS)
 
 def load_sidecar(path) -> dict:
     """Read a per-campaign sidecar YAML into a dict
-    (collection / patterns / labels / hierarchy blocks)."""
+    (collection / patterns / labels / hierarchy / properties blocks / crs fallback)."""
     return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
 
 
@@ -88,6 +88,10 @@ def process_campaign(
 
     """Build or refresh one campaign collection on the root catalog.
 
+    Item build failures (unreadable CRS, reader errors) drop only that item;
+    the rest of the campaign still builds. A previously cataloged version of a
+    failed item follows the stale policy.
+
     Arguments:
         - folder ; path to the campaign folder
         - dry_run ; early returns, no writes except last_run.json. Readers not called except file_meta
@@ -98,7 +102,7 @@ def process_campaign(
         - seen_camp_ids ; passed in update_catalog() and mutated inplace
         - seen_item_ids ; passed in update_catalog() and mutated inplace
     Returns:
-        {"rebuilt": n, "reused": n, "stale": n}
+        {"rebuilt": n, "reused": n, "stale": n, "failed": n}
     Exceptions:
         - missing campaign.yaml
         - camp/item id collisions with earlier campaigns of the same run
@@ -119,7 +123,7 @@ def process_campaign(
 
     if not products:
         log.warning(f"no products in {folder.name}, campaign {camp_id} untouched")
-        return {"rebuilt": 0, "reused": 0, "stale": 0}
+        return {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 0}
 
     if seen_item_ids is not None:
         dupes = {p.id for p in products} & seen_item_ids
@@ -137,17 +141,30 @@ def process_campaign(
 
     props = sc.get("properties") or {}
     rebuilt = reused = 0
+    failed_items = []
     for p in products:
         prev = existing.get(p.id)
         if not force and prev is not None and not _needs_rebuild(p, prev):
             p.item = prev.clone()
             reused += 1
             continue
-        rebuilt += 1
         if not dry_run:
             # created survives rebuilds, updated stamps in build_item
             created = prev.common_metadata.created if prev else None
-            p.item = build_item(p, camp, created=created, properties=props)
+            try:
+                p.item = build_item(p, camp, created=created, properties=props,
+                                    crs=sc.get("crs"))
+            except Exception:
+                log.exception(f"item failed, dropped from this run: {p.id}")
+                failed_items.append(p)
+                continue
+        rebuilt += 1
+
+    if failed_items:
+        products = [p for p in products if p not in failed_items]
+        if not products:
+            log.warning(f"all items failed in {folder.name}, campaign {camp_id} untouched")
+            return {"rebuilt": 0, "reused": reused, "stale": 0, "failed": len(failed_items)}
 
     stale_ids = sorted(set(existing) - {p.id for p in products})
     for sid in stale_ids:
@@ -158,8 +175,10 @@ def process_campaign(
         else:
             log.info(f"removed stale item: {sid}")
 
-    counts = {"rebuilt": rebuilt, "reused": reused, "stale": len(stale_ids)}
-    log.info(f"{camp_id}: {rebuilt} rebuilt, {reused} reused, {len(stale_ids)} stale")
+    counts = {"rebuilt": rebuilt, "reused": reused, "stale": len(stale_ids),
+              "failed": len(failed_items)}
+    log.info(f"{camp_id}: {rebuilt} rebuilt, {reused} reused, {len(stale_ids)} stale, "
+             f"{len(failed_items)} failed")
     if dry_run:
         return counts
 

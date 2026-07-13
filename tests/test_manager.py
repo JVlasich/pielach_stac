@@ -6,6 +6,39 @@ import pystac
 from stac.catalog.manager import update_catalog
 
 
+def test_failed_item_isolated(tmp_path, write_tif, write_tif_no_crs):
+    out = tmp_path / "catalog"
+    camp = tmp_path / "2020-01-01"
+    camp.mkdir()
+    write_tif(camp / "pielach_2020-01-01_dtm_etrs89.tif", 10)
+    write_tif_no_crs(camp / "pielach_2020-01-01_dsm_etrs89.tif")
+    (camp / "campaign.yaml").write_text("", encoding="utf-8")
+
+    # no-CRS item fails alone, campaign still builds
+    res = update_catalog(tmp_path, out)
+    assert res["ok"]["2020-01-01"] == {"rebuilt": 1, "reused": 0, "stale": 0, "failed": 1}, res
+    cat = pystac.Catalog.from_file(str(out / "catalog.json"))
+    assert {i.id for i in cat.get_items(recursive=True)} == {"pielach_2020-01-01_dtm_etrs89"}
+
+    # sidecar crs fallback rescues it
+    (camp / "campaign.yaml").write_text('crs: "EPSG:31256"\n', encoding="utf-8")
+    res = update_catalog(tmp_path, out)
+    assert res["ok"]["2020-01-01"] == {"rebuilt": 1, "reused": 1, "stale": 0, "failed": 0}, res
+    cat = pystac.Catalog.from_file(str(out / "catalog.json"))
+    item = next(i for i in cat.get_items(recursive=True) if i.id.endswith("dsm_etrs89"))
+    assert item.properties["proj:code"] == "EPSG:31256"
+
+    # every item failing: campaign untouched, no collection created
+    camp2 = tmp_path / "2021-02-02"
+    camp2.mkdir()
+    write_tif_no_crs(camp2 / "pielach_2021-02-02_dtm_etrs89.tif")
+    (camp2 / "campaign.yaml").write_text("", encoding="utf-8")
+    res = update_catalog(tmp_path, out)
+    assert res["ok"]["2021-02-02"] == {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 1}, res
+    cat = pystac.Catalog.from_file(str(out / "catalog.json"))
+    assert cat.get_child("pielach_2021-02-02") is None
+
+
 def test_update_catalog_staged_idempotency(tmp_path, write_tif):
     """One sequential story: build -> reuse -> content change -> stale ->
     dry-run -> force -> subcollection stale -> duplicate id -> vanished campaign."""
@@ -35,7 +68,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif):
 
     # run 1: full build, broken campaign isolated
     res = update_catalog(tmp_path, out)
-    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 5, "reused": 0, "stale": 0}, res
+    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 5, "reused": 0, "stale": 0, "failed": 0}, res
     assert "2023-05-05_broken" in res["failed"]
 
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
@@ -60,7 +93,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif):
 
     # run 2: no-op, everything reused, timestamps untouched
     res = update_catalog(tmp_path, out)
-    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 0, "reused": 5, "stale": 0}, res
+    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 0, "reused": 5, "stale": 0, "failed": 0}, res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
     item = next(i for i in cat.get_items(recursive=True) if i.id == "pielach_2023-02-08_dtm_etrs89")
     assert (item.properties["created"], item.properties["updated"]) == (created0, updated0)
@@ -73,7 +106,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif):
     # content change at constant size -> hash path rebuilds exactly that item
     write_tif(camp_dir / "pielach_2023-02-08_dtm_etrs89.tif", 99)
     res = update_catalog(tmp_path, out)
-    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 1, "reused": 4, "stale": 0}, res
+    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 1, "reused": 4, "stale": 0, "failed": 0}, res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
     item = next(i for i in cat.get_items(recursive=True) if i.id == "pielach_2023-02-08_dtm_etrs89")
     assert item.properties["created"] == created0, "created survives rebuilds"
@@ -82,7 +115,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif):
     # deleted file: default warn keeps the item, remove drops it
     (camp_dir / "pielach_2023-02-08_dsm_etrs89.tif").unlink()
     res = update_catalog(tmp_path, out)
-    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 0, "reused": 4, "stale": 1}, res
+    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 0, "reused": 4, "stale": 1, "failed": 0}, res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
     assert len(list(cat.get_items(recursive=True))) == 5
 
@@ -101,12 +134,12 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif):
 
     # force skips the gate, everything rebuilds
     res = update_catalog(tmp_path, out, force=True)
-    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 4, "reused": 0, "stale": 0}, res
+    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 4, "reused": 0, "stale": 0, "failed": 0}, res
 
     # kept-stale tile stays inside its subcollection (no flat drift)
     (camp_dir / "tiles" / "pielach_2023-02-08_dtm_1_3.tif").unlink()
     res = update_catalog(tmp_path, out)
-    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 0, "reused": 3, "stale": 1}, res
+    assert res["ok"]["2023-02-08_test"] == {"rebuilt": 0, "reused": 3, "stale": 1, "failed": 0}, res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
     camp = cat.get_child("pielach_2023-02-08")
     assert {i.id for i in camp.get_items()} == {"pielach_2023-02-08_dtm_etrs89"}

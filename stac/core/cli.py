@@ -113,14 +113,17 @@ def main():
     ok, failed = res["ok"], res["failed"]
 
     # Summary
+    failed_items = 0
     for name, c in ok.items():
-        log.info(f"  {name}: {c['rebuilt']} rebuilt, {c['reused']} reused, {c['stale']} stale")
+        log.info(f"  {name}: {c['rebuilt']} rebuilt, {c['reused']} reused, "
+                 f"{c['stale']} stale, {c['failed']} failed")
+        failed_items += c["failed"]
     if res["stale_collections"]:
         log.info(f"  stale collections: {', '.join(res['stale_collections'])}")
-    log.info(f"Done. {len(ok)} ok, {len(failed)} failed.")
+    log.info(f"Done. {len(ok)} ok, {len(failed)} failed, {failed_items} failed item(s).")
     for name, msg in failed.items():
         log.error(f"  {name}: {msg}")
-    if failed or res["validation"] not in (None, "ok"):
+    if failed or failed_items or res["validation"] not in (None, "ok"):
         sys.exit(1)
 
 

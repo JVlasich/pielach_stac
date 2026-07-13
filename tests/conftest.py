@@ -30,9 +30,22 @@ def _write_masked_tif(path, value: int = 100) -> None:
     ds = None
 
 
+def _write_tif_no_crs(path, size: int = 4) -> None:
+    """Georeferenced grid but no CRS declared (legacy-file case)."""
+    ds = gdal.GetDriverByName("GTiff").Create(str(path), size, size, 1, gdal.GDT_Byte)
+    ds.SetGeoTransform((-53000, 25, 0, 340000, 0, -25))
+    ds.GetRasterBand(1).Fill(10)
+    ds = None
+
+
 @pytest.fixture
 def write_tif():
     return _write_tif
+
+
+@pytest.fixture
+def write_tif_no_crs():
+    return _write_tif_no_crs
 
 
 @pytest.fixture

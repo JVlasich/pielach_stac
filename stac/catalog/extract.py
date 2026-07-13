@@ -203,19 +203,35 @@ def _mask_footprint(ds, gt, srs, w: int, h: int) -> tuple[dict, list] | None:
     return json.loads(geom.ExportToJson()), [minx, miny, maxx, maxy]
 
 
-def raster(path: str) -> AssetMeta:
+def _fallback_srs(crs: str, path) -> "osr.SpatialReference":
+    """Sidecar crs string (EPSG:xxxx or WKT) -> SpatialReference. Used only
+    when the file itself carries no CRS."""
+    log.warning(f"no CRS in file, using sidecar crs {crs!r}: {path}")
+    srs = osr.SpatialReference()
+    try:
+        srs.SetFromUserInput(str(crs))
+    except RuntimeError as e:
+        raise ValueError(f"{path}: invalid sidecar crs {crs!r}: {e}") from e
+    return srs
+
+
+def raster(path: str, crs: str | None = None) -> AssetMeta:
     """Extracts relevant raster metadata using GDAL.
     Item datetime is campaign-driven and not read here; TIFFTAG_DATETIME is kept
     only as the processing timestamp. Band statistics are exact (full scan).
     geometry = mask-derived footprint, bbox rectangle fallback.
+    crs = sidecar fallback, only consulted when the file has none.
     returns: AssetMeta object"""
     log.debug(f"extracting raster metadata: {path}")
     ds = gdal.Open(str(path))
 
     srs = ds.GetSpatialRef()
+    if srs is None and crs:
+        srs = _fallback_srs(crs, path)
     if srs is None:
         log.error(f"no CRS readable: {path}")
-        raise ValueError(f"{path}: no CRS readable (check PROJ_LIB/GDAL_DATA)")
+        raise ValueError(f"{path}: no CRS readable (check PROJ_LIB/GDAL_DATA, "
+                         f"or set 'crs' in campaign.yaml)")
 
     gt = ds.GetGeoTransform()
     w, h = ds.RasterXSize, ds.RasterYSize
@@ -284,9 +300,10 @@ def raster(path: str) -> AssetMeta:
     )
 
 
-def pointcloud(path: str) -> AssetMeta:
+def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
     """Extracts relevant pointcloud metadata using opalsInfo.
     Attributes are only extracted if they have more than one possible value.
+    crs = sidecar fallback, only consulted when the file has none.
     returns: AssetMeta object"""
     log.debug(f"extracting pointcloud metadata: {path}")
     inf = Info.Info()
@@ -325,12 +342,17 @@ def pointcloud(path: str) -> AssetMeta:
     gps = next((s for s in statistics if s["name"] == "GPSTime"), None)
 
     wkt = stats.getCoordRefSys()
-    if not wkt:
+    if wkt:
+        srs = osr.SpatialReference()
+        if srs.ImportFromWkt(wkt) != 0:
+            raise ValueError(f"{path}: invalid CRS WKT")
+    elif crs:
+        srs = _fallback_srs(crs, path)
+        wkt = srs.ExportToWkt(["FORMAT=WKT2_2018"])
+    else:
         log.error(f"no CRS readable: {path}")
-        raise ValueError(f"{path}: no CRS readable (check PROJ_LIB/GDAL_DATA)")
-    srs = osr.SpatialReference()
-    if srs.ImportFromWkt(wkt) != 0:
-        raise ValueError(f"{path}: invalid CRS WKT")
+        raise ValueError(f"{path}: no CRS readable (check PROJ_LIB/GDAL_DATA, "
+                         f"or set 'crs' in campaign.yaml)")
 
     # EPSG attempt so pointcloud items get proj:code like rasters do
     code = srs.GetAuthorityCode(None)

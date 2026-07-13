@@ -176,7 +176,7 @@ _SIDECAR_MEDIA = {".prj": "text/plain", ".tfw": "text/plain", ".aux.xml": "appli
 
 
 def build_item(product, campaign: date, *, created: datetime | None = None,
-               properties: dict | None = None) -> pystac.Item:
+               properties: dict | None = None, crs: str | None = None) -> pystac.Item:
     """Produces and populates a Stac item from a discover::Product
     Steps:
         1) Run readers -> Assetmeta
@@ -187,7 +187,7 @@ def build_item(product, campaign: date, *, created: datetime | None = None,
     """
     extracted = []
     for a in product.assets:
-        meta = _readers[a.kind](a.path)
+        meta = _readers[a.kind](a.path, crs=crs)
         fm = a.file_meta or _readers["file_meta"](a.path)
         extracted.append((a, meta, fm))
 
