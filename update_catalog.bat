@@ -9,6 +9,7 @@ rem (12_PROCESSED_DATASETS); catalog is written to <data root>\catalog.
 rem Needs only an OPALS installation; python deps ship in libs\.
 rem Set OPALS_ROOT / DATA_ROOT as environment variables to override.
 rem ============================================================
+
 if not defined OPALS_ROOT set "OPALS_ROOT=C:\opals_nightly_2.6.0"
 if not defined REPO       set "REPO=%~dp0"
 if not defined DATA_ROOT  for %%I in ("%~dp0..") do set "DATA_ROOT=%%~fI"
@@ -28,13 +29,8 @@ rem harvest the opalsShell environment (PATH, PYTHONPATH, GDAL_DATA, PROJ_LIB)
 rem "rem" argument skips the interactive shell -> returns control here
 call "%OPALS_ROOT%\opalsShell.bat" rem
 
-rem opalsShell should set these; force them so CRS reads never silently break
-set "GDAL_DATA=%OPALS_ROOT%\addons\crs"
-set "PROJ_LIB=%OPALS_ROOT%\addons\crs"
-set "PROJ_DATA=%OPALS_ROOT%\addons\crs"
-
-rem put repo code + vendored deps on PYTHONPATH
-set "PYTHONPATH=%REPO%;%REPO%\libs;%PYTHONPATH%"
+rem put repo code on PYTHONPATH; vendored deps in libs\ are added by stac\__init__.py
+set "PYTHONPATH=%REPO%;%PYTHONPATH%"
 
 rem optional config.yaml in the repo root
 set "CFG_ARG="

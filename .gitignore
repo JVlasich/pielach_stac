@@ -23,5 +23,5 @@ notebooks/
 *.yml
 *.txt
 
-!configs/**/*.yaml
+!sample_configs/**/*.yaml
 !config.yaml
