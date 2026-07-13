@@ -11,7 +11,9 @@ Requires: opals
 
 import argparse
 import logging
+import math
 import os
+import struct
 import subprocess
 import sys
 import textwrap
@@ -41,6 +43,7 @@ DEFAULTS = {
     "keepodm": True,
     "buffer": 0,
     "keeptmp": False,
+    "mergeBelow": 100.0,
 }
 
 
@@ -61,15 +64,13 @@ def import_laz_file(infile: Path, tmp_path: Path, nbThreads: int, tileSize_odm: 
     return imp
 
 
-def pretile(header, tmp_path: Path, nbThreads: int, pointOrigin: str | None, tileSize: int):
+def pretile(header, tmp_path: Path, nbThreads: int, pointOrigin: str, tileSize: int):
     pret = preTiling.preTiling()
     box = header.getLimit()
     pret.bbox = [box.xmin, box.ymin, box.xmax, box.ymax]  # type: ignore
     pret.skipIfExists = True  # type: ignore
     pret.tileSize = tileSize
-    # infer pointorigin from bbox if not provided
-    # shift by half LAS resolution so quantized coords never sit exactly on tile edges (dupes)
-    pret.pointOrigin = pointOrigin if pointOrigin else f"{box.xmin - 0.0005};{box.ymin - 0.0005}"
+    pret.pointOrigin = pointOrigin
     if nbThreads:
         pret.nbThreads = nbThreads  # type: ignore
     opals_log(pret)
@@ -96,23 +97,125 @@ def precut(infile: Path, buffer: int, export_dir: Path, nbThreads: int,
     return prec
 
 
-def find_laz_needing_conversion(tile_tmp: Path, outdir: Path) -> list:
-    existing_copc = {p.name for p in outdir.glob("*.copc.laz")}
-    need_conversion = []
+def _copc_name(laz: Path) -> str:
+    return laz.stem + ".copc.laz"
 
-    for laz in tile_tmp.glob("*.laz"):
+
+def read_las_bbox(path: Path) -> tuple[float, float, float, float]:
+    """(xmin, ymin, xmax, ymax) from the LAS public header (same offsets in LAS 1.2-1.4, LAZ too)."""
+    with open(path, "rb") as f:
+        f.seek(179)
+        maxx, minx, maxy, miny = struct.unpack("<4d", f.read(32))
+    return minx, miny, maxx, maxy
+
+
+def group_tiles(tiles: list, threshold: float) -> list:
+    """Merge tiles below threshold (bytes) into edge-adjacent neighbors.
+
+    tiles: (name, size, (col, row)) per tile. Returns groups as lists of names,
+    largest member first (it names the merged output). Deterministic: smallest
+    runt merges first, into its smallest adjacent group; name breaks ties.
+    """
+    groups = [{"members": [(name, size)], "cells": {cell}, "size": size}
+              for name, size, cell in sorted(tiles)]
+
+    def adjacent(a, b):
+        return any(abs(ax - bx) + abs(ay - by) == 1
+                   for ax, ay in a["cells"] for bx, by in b["cells"])
+
+    while True:
+        order = sorted(groups, key=lambda g: (g["size"], g["members"][0][0]))
+        runt = next((g for g in order if g["size"] < threshold
+                     and any(adjacent(g, o) for o in groups if o is not g)), None)
+        if runt is None:
+            break
+        target = min((g for g in groups if g is not runt and adjacent(runt, g)),
+                     key=lambda g: (g["size"], g["members"][0][0]))
+        target["members"] += runt["members"]
+        target["cells"] |= runt["cells"]
+        target["size"] += runt["size"]
+        groups.remove(runt)
+
+    return [[n for n, s in sorted(g["members"], key=lambda m: (-m[1], m[0]))]
+            for g in sorted(groups, key=lambda g: g["members"][0][0])]
+
+
+def plan_tile_groups(tile_tmp: Path, point_origin: str, tile_size: float, merge_below: float) -> list:
+    """Scan cut tiles, group runts (< mergeBelow MB) with their grid neighbors.
+    Returns groups as lists of LAZ paths, largest first."""
+    ox, oy = (float(v) for v in point_origin.split(";"))
+    tiles = []
+    for laz in sorted(tile_tmp.glob("*.laz")):
         if laz.name.endswith(".copc.laz"):
             continue
-        expected_copc_name = laz.stem + ".copc.laz"
-        if expected_copc_name not in existing_copc:
-            need_conversion.append(laz)
+        xmin, ymin, xmax, ymax = read_las_bbox(laz)
+        cell = (math.floor(((xmin + xmax) / 2 - ox) / tile_size),
+                math.floor(((ymin + ymax) / 2 - oy) / tile_size))
+        tiles.append((laz.name, laz.stat().st_size, cell))
 
-    return need_conversion
+    threshold = (merge_below or 0) * 1e6
+    groups = group_tiles(tiles, threshold)
+
+    sizes = {name: size for name, size, _ in tiles}
+    for g in groups:
+        if len(g) > 1:
+            log.info(f"Merging {len(g)} tiles into {Path(g[0]).stem}: {', '.join(g[1:])}")
+        if sum(sizes[n] for n in g) < threshold:
+            log.warning(f"Tile below mergeBelow but no adjacent neighbor, kept as-is: {g[0]}")
+    return [[tile_tmp / n for n in g] for g in groups]
+
+
+def warn_stale(groups: list, outdir: Path):
+    """Flag leftover COPCs from earlier runs that no current group produces."""
+    receiver = {_copc_name(m): _copc_name(g[0]) for g in groups for m in g}
+    expected = {_copc_name(g[0]) for g in groups}
+    stale = sorted(p.name for p in outdir.glob("*.copc.laz") if p.name not in expected)
+    if not stale:
+        return
+    receivers = sorted({receiver[n] for n in stale if n in receiver})
+    msg = f"Stale tiles from a previous run in {outdir}: {', '.join(stale)}."
+    if receivers:
+        msg += (f" Their points now belong in: {', '.join(receivers)}."
+                " Delete the stale files AND those receivers, then re-run.")
+    log.warning(msg)
+
+
+def convert_groups(groups: list, tile_tmp: Path, odir: Path):
+    """Convert tile groups to COPC in odir. Singletons batch through one -lof call,
+    merged groups get one -merged call each. Existing outputs are skipped."""
+    singles = [g[0] for g in groups
+               if len(g) == 1 and not (odir / _copc_name(g[0])).exists()]
+    merged = [g for g in groups
+              if len(g) > 1 and not (odir / _copc_name(g[0])).exists()]
+    if not singles and not merged:
+        log.info("All tiles already have COPC. Skipping conversion.")
+        return
+
+    if singles:
+        convert_to_copc(singles, tile_tmp, odir)
+
+    for g in merged:
+        out = odir / _copc_name(g[0])
+        log.info(f"Merging {len(g)} tile(s) into {out.name}...")
+        lof_path = tile_tmp / "_merge_list.txt"
+        lof_path.write_text("\n".join(str(f) for f in g), encoding="utf-8")
+        # same convention as convert_to_copc
+        subprocess.run([
+            str(_BIN / _COPCINDEX),
+            "-merged",
+            "-lof", str(lof_path),
+            "-o", str(out),
+            "-progress",
+        ],
+            check=False
+        )
+        if not out.exists():
+            raise RuntimeError(f"lascopcindex produced no merged output for {out.name}")
+        lof_path.unlink(missing_ok=True)
 
 
 def convert_to_copc(laz_files: list, tile_tmp: Path, odir: Path):
     if not laz_files:
-        log.info("All tiles already have COPC. Skipping conversion.")
         return
 
     log.info(f"Converting {len(laz_files)} tile(s) to COPC...")
@@ -196,7 +299,11 @@ def build_parser() -> argparse.ArgumentParser:
     tac.add_argument("--tileSize", type=float, default=None,
                         help=f"Tile size in map units (default: {DEFAULTS['tileSize']})")
     tac.add_argument("--buffer", type=float, default=None,
-                        help=f"Buffer around tiles in map units (default: {DEFAULTS['buffer']})")
+                        help="Buffer around tiles in map units; keep 0 when mergeBelow is active, "
+                             f"merged tiles would duplicate overlap points (default: {DEFAULTS['buffer']})")
+    tac.add_argument("--mergeBelow", type=float, default=None,
+                        help="Merge tiles smaller than this (MB) into an adjacent tile, "
+                             f"0 disables (default: {DEFAULTS['mergeBelow']})")
     tac.add_argument("--tileSize_odm", type=float, default=None,
                         help=f"Tile size for opalsImport (default: {DEFAULTS['tileSize_odm']})")
     tac.add_argument("--keepodm", action=argparse.BooleanOptionalAction, default=None, # note to self: NO store_true
@@ -237,7 +344,11 @@ def process_one(infile: Path | str, cfg: dict, outdir: Path | str, tmp_root: Pat
 
         # Create tile grid
         log.info("Creating tile grid...")
-        pretile(header, work, cfg["nbThreads"], cfg["pointOrigin"], cfg["tileSize"])
+        # infer pointorigin from bbox if not provided
+        # shift by half LAS resolution so quantized coords never sit exactly on tile edges (dupes)
+        box = header.getLimit()
+        origin = cfg["pointOrigin"] if cfg["pointOrigin"] else f"{box.xmin - 0.0005};{box.ymin - 0.0005}"
+        pretile(header, work, cfg["nbThreads"], origin, cfg["tileSize"])
 
         # Cut tiles — LAZ goes to tile_tmp, not outdir
         log.info("Cutting tiles...")
@@ -245,9 +356,10 @@ def process_one(infile: Path | str, cfg: dict, outdir: Path | str, tmp_root: Pat
     finally:
         os.chdir(str(original_cwd))
 
-    # COPC conversion — skip files already in outdir
-    laz_to_convert = find_laz_needing_conversion(tile_tmp, outdir)
-    convert_to_copc(laz_to_convert, tile_tmp, outdir)
+    # Group runt tiles with neighbors, then convert — skip outputs already in outdir
+    groups = plan_tile_groups(tile_tmp, origin, cfg["tileSize"], cfg["mergeBelow"])
+    warn_stale(groups, outdir)
+    convert_groups(groups, tile_tmp, outdir)
     return odm_path
 
 
