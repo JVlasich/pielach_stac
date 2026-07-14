@@ -15,6 +15,7 @@ from .build import build_collection, build_item, campaign_date
 from .discover import discover
 from .extract import file_meta
 from .hierarchy import resolve_hierarchy
+from .thumbnail import render_thumbnail
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ CATALOG_DEFAULTS = {
     "assetHrefs": "absolute",# relative (self-contained) | absolute (keep build-time paths)
     "nbThreads": None,       # opals thread count, None = opals default (all CPUs)
     "exactComputation": True,# exact point statistics (full scan) vs header-only (fast, no stats)
+    "thumbnails": True,      # render PNG thumbnails for raster items (ortho/DSM/DTM)
 }
 config.register_defaults("catalog", CATALOG_DEFAULTS)
 
@@ -84,7 +86,9 @@ def process_campaign(
     policy_non_cn:  str = "warn",
     policy_stale:   str = "warn",
     seen_camp_ids: set | None = None,
-    seen_item_ids: set | None = None
+    seen_item_ids: set | None = None,
+    thumbnails: bool = True,
+    thumb_jobs: list | None = None
 ) -> dict:
 
     """Build or refresh one campaign collection on the root catalog.
@@ -159,6 +163,10 @@ def process_campaign(
                 log.exception(f"item failed, dropped from this run: {p.id}")
                 failed_items.append(p)
                 continue
+            a0 = p.assets[0]
+            if thumbnails and thumb_jobs is not None and a0.thumbnail and a0.kind == "raster":
+                kind = "rgb" if a0.category == "orthophoto" else "hillshade"
+                thumb_jobs.append((p.item, a0.path, kind))
         rebuilt += 1
 
     if failed_items:
@@ -265,6 +273,7 @@ def update_catalog(
     policy_stale:   str = "warn",
     policy_unknown: str = "warn",
     policy_non_cn:  str = "warn",
+    thumbnails:     bool = True,
 ) -> dict:
     """Re-run the whole catalog over a processed-datasets root (idempotent).
     Campaign dirs = direct subdirs with an ISO date token; failures are isolated.
@@ -299,6 +308,8 @@ def update_catalog(
     try:
         ok, failed = {}, {}
         seen_camp_ids, seen_item_ids = set(), set()
+        # (item, src_path, kind) for rebuilt raster items, rendered after normalize
+        thumb_jobs: list = []
         for d in sorted(root.iterdir()):
             if not d.is_dir() or d.resolve() == out_dir.resolve():
                 continue
@@ -315,7 +326,8 @@ def update_catalog(
                 ok[d.name] = process_campaign(
                     d, cat, policy_stale=policy_stale, dry_run=dry_run, force=force,
                     policy_unknown=policy_unknown, policy_non_cn=policy_non_cn,
-                    seen_camp_ids=seen_camp_ids, seen_item_ids=seen_item_ids)
+                    seen_camp_ids=seen_camp_ids, seen_item_ids=seen_item_ids,
+                    thumbnails=thumbnails, thumb_jobs=thumb_jobs)
             except Exception as e:
                 log.exception(f"FAILED: {d.name}")
                 failed[d.name] = str(e)
@@ -337,6 +349,14 @@ def update_catalog(
         validation = None
         if not dry_run:
             cat.normalize_hrefs(str(out_dir))
+            if thumbnails:
+                for item, src, kind in thumb_jobs:
+                    try:
+                        href = render_thumbnail(item, src, kind)
+                        item.add_asset("thumbnail", pystac.Asset(
+                            href=href, media_type="image/png", roles=["thumbnail"]))
+                    except Exception as e:
+                        log.warning(f"thumbnail failed for {item.id}: {e}")
             if asset_hrefs == "relative":
                 cat.make_all_asset_hrefs_relative()
             cat.save(catalog_type=pystac.CatalogType.SELF_CONTAINED)

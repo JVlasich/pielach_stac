@@ -37,6 +37,7 @@ class Asset:
     media_type: str
     extensions: list   # which @populators run
     cloud_native: bool
+    thumbnail: bool = False  # registry label flag, drives thumbnail render (raster only)
     sidecars: list = field(default_factory=list)  # Paths matched by full basename
     file_meta: object = None  # extract.FileMeta, attached by manager's gate when it hashed
 
@@ -308,6 +309,7 @@ def discover(folder: str | Path, policy_unknown: str = "warn", stem_patterns=Non
             media_type=COG_MEDIA_TYPE if is_cog else m.info["media_type"],
             extensions=list(m.info["extensions"]),
             cloud_native=m.cloud_native,
+            thumbnail=m.info["thumbnail"],
         )
         # same dir + stem form (x.prj) or full-name form (x.tif.aux.xml)
         base = m.path.name[: -len(m.ext)]

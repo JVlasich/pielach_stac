@@ -131,7 +131,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["raster", "projection", "file"],
-        "thumbnail":  False,
+        "thumbnail":  True,
     },
     "dtm_masked": {
         "category":   "dtm",
@@ -139,7 +139,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["raster", "projection", "file"],
-        "thumbnail":  False,
+        "thumbnail":  True,
     },
 
     # DSM (surface) variants -> category "dsm"
@@ -157,7 +157,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["raster", "projection", "file"],
-        "thumbnail":  False,
+        "thumbnail":  True,
     },
     "dsm_masked": {
         "category":   "dsm",
@@ -165,7 +165,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["raster", "projection", "file"],
-        "thumbnail":  False,
+        "thumbnail":  True,
     },
 
     # category "ignore" = discover matches then drops silently (derived viz, not a product)
