@@ -1,9 +1,18 @@
 import json
 import shutil
+from pathlib import Path
 
 import pystac
 
 from stac.catalog.manager import update_catalog
+
+
+def _raw_data_href(out: Path, item_id: str) -> str:
+    """The on-disk (un-resolved) href of an item's first data asset."""
+    item_json = next(out.rglob(f"{item_id}.json"))
+    d = json.loads(item_json.read_text(encoding="utf-8"))
+    a = next(a for a in d["assets"].values() if "data" in (a.get("roles") or []))
+    return a["href"]
 
 
 def test_failed_item_isolated(tmp_path, write_tif, write_tif_no_crs):
@@ -39,17 +48,41 @@ def test_failed_item_isolated(tmp_path, write_tif, write_tif_no_crs):
     assert cat.get_child("pielach_2021-02-02") is None
 
 
+def test_subcollection_id_not_doubled_and_asset_href_modes(tmp_path, write_tif):
+    out = tmp_path / "catalog"
+    camp = tmp_path / "2024-10-09"
+    tiles = camp / "pielach_2024-10-09_tiles"
+    tiles.mkdir(parents=True)
+    write_tif(camp / "pielach_2024-10-09_dsm_etrs89.tif", 10)
+    write_tif(tiles / "pielach_2024-10-09_dtm_526000_534000.tif", 20)
+    write_tif(tiles / "pielach_2024-10-09_dtm_527000_534000.tif", 30)
+    (camp / "campaign.yaml").write_text("", encoding="utf-8")
+
+    # default: subcollection id takes the subdir name as-is, no camp_id doubling
+    update_catalog(tmp_path, out)
+    cat = pystac.Catalog.from_file(str(out / "catalog.json"))
+    coll = cat.get_child("pielach_2024-10-09")
+    assert coll.get_child("pielach_2024-10-09_tiles") is not None
+    assert coll.get_child("pielach_2024-10-09_pielach_2024-10-09_tiles") is None
+    # relative (default) asset href climbs out of catalog/
+    assert _raw_data_href(out, "pielach_2024-10-09_dsm_etrs89").startswith("..")
+
+    # absolute mode keeps the build-time absolute path
+    update_catalog(tmp_path, out, force=True, asset_hrefs="absolute")
+    assert Path(_raw_data_href(out, "pielach_2024-10-09_dsm_etrs89")).is_absolute()
+
+
 def test_update_catalog_staged_idempotency(tmp_path, write_tif):
     """One sequential story: build -> reuse -> content change -> stale ->
     dry-run -> force -> subcollection stale -> duplicate id -> vanished campaign."""
     out = tmp_path / "catalog"
     camp_dir = tmp_path / "2023-02-08_test"
-    (camp_dir / "tiles").mkdir(parents=True)
+    (camp_dir / "pielach_2023-02-08_tiles").mkdir(parents=True)
     write_tif(camp_dir / "pielach_2023-02-08_dtm_etrs89.tif", 10)
     write_tif(camp_dir / "pielach_2023-02-08_dsm_etrs89.tif", 20)
-    write_tif(camp_dir / "tiles" / "pielach_2023-02-08_dtm_1_1.tif", 30)
-    write_tif(camp_dir / "tiles" / "pielach_2023-02-08_dtm_1_2.tif", 40)
-    write_tif(camp_dir / "tiles" / "pielach_2023-02-08_dtm_1_3.tif", 45)
+    write_tif(camp_dir / "pielach_2023-02-08_tiles" / "pielach_2023-02-08_dtm_1_1.tif", 30)
+    write_tif(camp_dir / "pielach_2023-02-08_tiles" / "pielach_2023-02-08_dtm_1_2.tif", 40)
+    write_tif(camp_dir / "pielach_2023-02-08_tiles" / "pielach_2023-02-08_dtm_1_3.tif", 45)
     (camp_dir / "campaign.yaml").write_text(
         "collection:\n"
         "  title: Test campaign\n"
@@ -59,7 +92,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif):
         "  platform: riegl-test\n"
         "hierarchy:\n"
         "  groups:\n"
-        "    tiles:\n"
+        "    pielach_2023-02-08_tiles:\n"
         "      title: DTM tiles\n",
         encoding="utf-8",
     )
@@ -137,7 +170,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif):
     assert res["ok"]["2023-02-08_test"] == {"rebuilt": 4, "reused": 0, "stale": 0, "failed": 0}, res
 
     # kept-stale tile stays inside its subcollection (no flat drift)
-    (camp_dir / "tiles" / "pielach_2023-02-08_dtm_1_3.tif").unlink()
+    (camp_dir / "pielach_2023-02-08_tiles" / "pielach_2023-02-08_dtm_1_3.tif").unlink()
     res = update_catalog(tmp_path, out)
     assert res["ok"]["2023-02-08_test"] == {"rebuilt": 0, "reused": 3, "stale": 1, "failed": 0}, res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))

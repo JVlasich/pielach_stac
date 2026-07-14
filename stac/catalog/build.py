@@ -44,8 +44,6 @@ def resolve_pc_datetime(gps_min, gps_max, campaign: date) -> tuple[datetime, dat
     if gps_max > _WEEK:  # adjusted standard
         start = _GPS_EPOCH + timedelta(seconds=gps_min + 1e9)
         end = _GPS_EPOCH + timedelta(seconds=gps_max + 1e9)
-        if abs((start.date() - campaign).days) > 7:
-            log.warning(f"gps datetime {start.date()} deviates from campaign date {campaign}")
     else:  # weekseconds
         if gps_max < gps_min:
             log.warning(f"gps weekseconds wrap Sat->Sun ({gps_min} > {gps_max}), extending into next week")
@@ -54,6 +52,10 @@ def resolve_pc_datetime(gps_min, gps_max, campaign: date) -> tuple[datetime, dat
                       - timedelta(days=(campaign.weekday() + 1) % 7))
         start = week_start + timedelta(seconds=gps_min)
         end = week_start + timedelta(seconds=gps_max)
+    # a stray min OR max poisons the extent; warn on either
+    for edge, dt in (("start", start), ("end", end)):
+        if abs((dt.date() - campaign).days) > 7:
+            log.warning(f"gps {edge} {dt.date()} deviates >7d from campaign date {campaign}")
     return start, end
 
 # maps the random int to the opals type and in turn to the stac type
@@ -266,7 +268,7 @@ def _summarize(items) -> Summaries | None:
 
 
 # id consumed upstream in manager.process_campaign
-_COLLECTION_META_KEYS = {"id", "title", "description", "license", "providers", "keywords"}
+_COLLECTION_META_KEYS = {"id", "title", "description", "license", "license_link", "providers", "keywords"}
 
 
 def build_collection(cid: str, meta: dict, items: list, children: Sequence = ()) -> Collection:
@@ -296,6 +298,11 @@ def build_collection(cid: str, meta: dict, items: list, children: Sequence = ())
         keywords=meta.get("keywords"),
         summaries=_summarize(all_items),
     )
+    lic_link = meta.get("license_link")
+    if lic_link:
+        coll.add_link(pystac.Link(rel="license", target=lic_link, title=meta.get("license")))
+    elif meta.get("license") == "other":
+        log.warning(f"collection {cid}: license 'other' without a license_link (spec recommends one)")
     for c in children:
         coll.add_child(c)
     for i in items:

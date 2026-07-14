@@ -1,3 +1,4 @@
+import logging
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -7,6 +8,11 @@ from stac.catalog.build import (_GPS_EPOCH, build_collection, build_item,
 from stac.catalog.discover import discover
 
 CAMP = date(2023, 2, 8)
+
+
+def _adjusted_gps(dt: datetime) -> float:
+    """Adjusted-standard GPS seconds for a UTC datetime (matches resolve_pc_datetime)."""
+    return (dt - _GPS_EPOCH).total_seconds() - 1_000_000_000
 
 
 def test_campaign_date_iso_token():
@@ -71,6 +77,33 @@ def test_build_item_and_collection(tmp_path, write_tif):
 
     with pytest.raises(ValueError):
         build_collection("empty", {}, [])
+
+
+def test_pc_datetime_end_outlier_warns_not_clamped(caplog):
+    # start on-campaign, a stray max GPS time ~5 months later (the 2024->2025 poisoning)
+    camp = date(2024, 10, 9)
+    good = datetime(2024, 10, 9, 8, tzinfo=timezone.utc)
+    stray = datetime(2025, 3, 12, 8, tzinfo=timezone.utc)
+    with caplog.at_level(logging.WARNING):
+        start, end = resolve_pc_datetime(_adjusted_gps(good), _adjusted_gps(stray), camp)
+    assert start == good and end.date() == date(2025, 3, 12), "reported as-is, not clamped"
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("end" in m and "deviates" in m for m in msgs), msgs
+    assert not any("start" in m and "deviates" in m for m in msgs), "start is on-campaign"
+
+
+def test_build_collection_license_link(tmp_path, write_tif):
+    write_tif(tmp_path / "pielach_2023-02-08_dtm_etrs89.tif", 10)
+    items = [build_item(p, CAMP) for p in discover(tmp_path)]
+
+    coll = build_collection("c", {"title": "t", "license": "CC-BY-4.0",
+                                  "license_link": "https://example.org/lic"}, items)
+    lic = [l for l in coll.links if l.rel == "license"]
+    assert len(lic) == 1 and lic[0].target == "https://example.org/lic"
+
+    # license "other" without a link: no link emitted (build warns, spec recommends one)
+    other = build_collection("c2", {"title": "t", "license": "other"}, items)
+    assert not [l for l in other.links if l.rel == "license"]
 
 
 def test_build_item_provenance(tmp_path, write_tif):

@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Process only campaign dirs matching this glob; skips the stale-collection sweep")
     cat.add_argument("--force", action=argparse.BooleanOptionalAction, default=None,
                      help="Skip the idempotency gate, rebuild every item (use after registry/code changes)")
+    cat.add_argument("--assetHrefs", type=str, choices=["relative", "absolute"], default=None,
+                     help="Asset href style: relative (self-contained) or absolute (keep build-time paths) (default: relative)")
 
     pol = parser.add_argument_group("Policy options")
 
@@ -109,7 +111,7 @@ def main():
     res = manager.update_catalog(
         root, out, policy_stale=cfg["stale"], dry_run=cfg["dryRun"], force=cfg["force"],
         validate=cfg["validate"], policy_unknown=cfg["unknownAssets"],
-        policy_non_cn=cfg["nonCloudNative"], only=cfg["only"])
+        policy_non_cn=cfg["nonCloudNative"], only=cfg["only"], asset_hrefs=cfg["assetHrefs"])
     ok, failed = res["ok"], res["failed"]
 
     # Summary

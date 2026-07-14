@@ -143,6 +143,20 @@ def _wgs84_footprint(srs, proj_bbox: list) -> tuple[dict, list]:
     return geometry, [lonmin, latmin, lonmax, latmax]
 
 
+def _drop_small_holes(poly, min_area: float):
+    """Rebuild a polygon keeping its exterior ring and only interior rings >= min_area.
+    Sliver holes are mask noise that blows up the ring count; large gaps survive."""
+    out = ogr.Geometry(ogr.wkbPolygon)
+    out.AddGeometry(poly.GetGeometryRef(0).Clone())  # exterior ring
+    for i in range(1, poly.GetGeometryCount()):
+        ring = poly.GetGeometryRef(i)
+        tmp = ogr.Geometry(ogr.wkbPolygon)
+        tmp.AddGeometry(ring.Clone())
+        if tmp.GetArea() >= min_area:
+            out.AddGeometry(ring.Clone())
+    return out
+
+
 def _mask_footprint(ds, gt, srs, w: int, h: int) -> tuple[dict, list] | None:
     """True data footprint from band 1's mask (nodata/alpha/internal): decimated
     read, polygonize, simplify, reproject to WGS84. Returns (geometry, bbox) or
@@ -182,12 +196,13 @@ def _mask_footprint(ds, gt, srs, w: int, h: int) -> tuple[dict, list] | None:
     # speck polygons are mask noise; stair vertices are decimation artifacts.
     # 3-pixel tolerance keeps the corridor shape and the item JSON small.
     px = abs(gt[1]) * sx
+    min_area = (3 * px) ** 2
     parts = ([geom] if geom.GetGeometryName() == "POLYGON"
              else [geom.GetGeometryRef(i) for i in range(geom.GetGeometryCount())])
     keep = ogr.Geometry(ogr.wkbMultiPolygon)
     for part in parts:
-        if part.GetArea() >= (3 * px) ** 2:
-            keep.AddGeometry(part.Clone())
+        if part.GetArea() >= min_area:
+            keep.AddGeometry(_drop_small_holes(part, min_area))
     geom = keep
     if geom.IsEmpty():
         return None

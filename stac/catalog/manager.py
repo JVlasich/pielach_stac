@@ -32,6 +32,7 @@ CATALOG_DEFAULTS = {
     "unknownAssets": "warn", # warn | skip | raise for unclassifiable files
     "nonCloudNative": "warn",# warn | skip | raise for files without a CN twin
     "only": None,            # glob over campaign dir names; skips the stale-collection sweep
+    "assetHrefs": "absolute",# relative (self-contained) | absolute (keep build-time paths)
     "nbThreads": None,       # opals thread count, None = opals default (all CPUs)
     "exactComputation": True,# exact point statistics (full scan) vs header-only (fast, no stats)
 }
@@ -190,13 +191,25 @@ def process_campaign(
 
     nodes = resolve_hierarchy(products, sc.get("hierarchy"))
     children = []
+    sub_ids: set = set()
     for node in nodes[1:]:
         if not node.products:
             continue
-        sub_id = f"{camp_id}_{node.name}"
-        meta = {"title": node.title, "description": node.description}
+        # the subdir already carries the campaign (pre-tool writes <stem>_tiles), take it as-is
+        sub_id = node.name
+        if sub_id == camp_id or sub_id in sub_ids:
+            log.warning(f"subcollection id collides with another id: {sub_id}")
+        sub_ids.add(sub_id)
+        cat = node.products[0].category
+        meta = {"title": node.title or f"{cat} tiles",
+                "description": node.description or f"Tiled {cat} for campaign {camp_id}."}
         items = [p.item for p in node.products] + stale_clones.pop(sub_id, [])
         children.append(build_collection(sub_id, meta, items))
+
+    # honest reporting: an item named exactly like a collection stays as-is, just flag it
+    for pid in sorted(p.id for p in products):
+        if pid == camp_id or pid in sub_ids:
+            log.warning(f"item id equals a collection id: {pid}")
 
     flat_items = [p.item for p in nodes[0].products] + stale_clones.pop(camp_id, [])
 
@@ -230,12 +243,25 @@ def _load_or_create_root(out_dir: Path) -> pystac.Catalog:
     return pystac.Catalog(id=cfg["id"], title=cfg["title"], description=cfg["description"])
 
 
+class _WarnCollector(logging.Handler):
+    """Captures warnings records during a run so they land in last_run.json."""
+
+    def __init__(self):
+        super().__init__(logging.WARNING)
+        self.msgs: list[str] = []
+        self.setFormatter(logging.Formatter("%(name)s | %(message)s"))
+
+    def emit(self, record):
+        self.msgs.append(self.format(record))
+
+
 def update_catalog(
     root, out_dir, *, # positional
     dry_run:    bool = False,
     force:      bool = False,
     validate:   bool = False,
     only: str | None = None,
+    asset_hrefs: str = "relative",
     policy_stale:   str = "warn",
     policy_unknown: str = "warn",
     policy_non_cn:  str = "warn",
@@ -254,6 +280,7 @@ def update_catalog(
         - force ; skip checks, rebuild all
         - validate ; calls pystac.validate at the end (requires dependency)
         - only ; look at a single campaign
+        - asset_hrefs ; "relative" (self-contained) or "absolute" (keep build-time paths)
         - policy_unknown ; in ("warn","skip","raise") decides how to handle unknown assets
         - policy_non_cn ; in ("warn","skip","raise") decides how to handle non cloud-native assets
         - policy_stale ; in ("warn","raise", "remove") decides how to handle stale collections
@@ -266,53 +293,61 @@ def update_catalog(
     root, out_dir = Path(root), Path(out_dir)
     cat = _load_or_create_root(out_dir)
 
-    ok, failed = {}, {}
-    seen_camp_ids, seen_item_ids = set(), set()
-    for d in sorted(root.iterdir()):
-        if not d.is_dir() or d.resolve() == out_dir.resolve():
-            continue
-        if only and not fnmatch.fnmatch(d.name, only):
-            log.debug(f"only={only!r} skips {d.name}")
-            continue
-        try:
-            campaign_date(d.name)
-        except ValueError:
-            log.info(f"not a campaign (no ISO date token): {d.name}")
-            continue
-        log.info(f"\033[96m=== {d.name} ===\033[00m")
-        try:
-            ok[d.name] = process_campaign(
-                d, cat, policy_stale=policy_stale, dry_run=dry_run, force=force,
-                policy_unknown=policy_unknown, policy_non_cn=policy_non_cn,
-                seen_camp_ids=seen_camp_ids, seen_item_ids=seen_item_ids)
-        except Exception as e:
-            log.exception(f"FAILED: {d.name}")
-            failed[d.name] = str(e)
+    warns = _WarnCollector()
+    root_logger = logging.getLogger()
+    root_logger.addHandler(warns)
+    try:
+        ok, failed = {}, {}
+        seen_camp_ids, seen_item_ids = set(), set()
+        for d in sorted(root.iterdir()):
+            if not d.is_dir() or d.resolve() == out_dir.resolve():
+                continue
+            if only and not fnmatch.fnmatch(d.name, only):
+                log.debug(f"only={only!r} skips {d.name}")
+                continue
+            try:
+                campaign_date(d.name)
+            except ValueError:
+                log.info(f"not a campaign (no ISO date token): {d.name}")
+                continue
+            log.info(f"\033[96m=== {d.name} ===\033[00m")
+            try:
+                ok[d.name] = process_campaign(
+                    d, cat, policy_stale=policy_stale, dry_run=dry_run, force=force,
+                    policy_unknown=policy_unknown, policy_non_cn=policy_non_cn,
+                    seen_camp_ids=seen_camp_ids, seen_item_ids=seen_item_ids)
+            except Exception as e:
+                log.exception(f"FAILED: {d.name}")
+                failed[d.name] = str(e)
 
-    if only:
-        stale_colls = []
-        log.info("only-filtered run: stale-collection sweep skipped")
-    else:
-        stale_colls = sorted(c.id for c in cat.get_children() if c.id not in seen_camp_ids)
-    for cid in stale_colls:
-        if policy_stale == "raise":
-            raise ValueError(f"stale collection {cid}: no campaign dir in {root}")
-        if policy_stale == "remove" and not failed and not dry_run:
-            cat.remove_child(cid)
-            log.info(f"removed stale collection: {cid}")
+        if only:
+            stale_colls = []
+            log.info("only-filtered run: stale-collection sweep skipped")
         else:
-            log.warning(f"collection kept, campaign dir gone: {cid}")
+            stale_colls = sorted(c.id for c in cat.get_children() if c.id not in seen_camp_ids)
+        for cid in stale_colls:
+            if policy_stale == "raise":
+                raise ValueError(f"stale collection {cid}: no campaign dir in {root}")
+            if policy_stale == "remove" and not failed and not dry_run:
+                cat.remove_child(cid)
+                log.info(f"removed stale collection: {cid}")
+            else:
+                log.warning(f"collection kept, campaign dir gone: {cid}")
 
-    validation = None
-    if not dry_run:
-        cat.normalize_hrefs(str(out_dir))
-        cat.make_all_asset_hrefs_relative()
-        cat.save(catalog_type=pystac.CatalogType.SELF_CONTAINED)
-        log.info(f"catalog saved: {out_dir}")
-        if validate:
-            validation = _validate_catalog(cat)
-    res = {"ok": ok, "failed": failed,
-           "stale_collections": stale_colls, "validation": validation}
+        validation = None
+        if not dry_run:
+            cat.normalize_hrefs(str(out_dir))
+            if asset_hrefs == "relative":
+                cat.make_all_asset_hrefs_relative()
+            cat.save(catalog_type=pystac.CatalogType.SELF_CONTAINED)
+            log.info(f"catalog saved: {out_dir}")
+            if validate:
+                validation = _validate_catalog(cat)
+    finally:
+        root_logger.removeHandler(warns)
+
+    res = {"ok": ok, "failed": failed, "stale_collections": stale_colls,
+           "validation": validation, "warnings": warns.msgs}
     _write_report(out_dir, res, dry_run=dry_run, force=force, only=only, stale=policy_stale)
     return res
 

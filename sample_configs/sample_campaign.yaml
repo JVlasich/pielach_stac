@@ -1,25 +1,28 @@
-# Metadata
-collection:
-  name: "hi"
-  description: "hi again"
-  instruments:
-    - instument1
-    - instument2
-  providers:
-    TU Wien, Department fuer Geodaesie und Geoinformation:
-      roles:
-        - processor
-      url: https://www.tuwien.at/mg/geo
+# Per-campaign sidecar. Place as "campaign.yaml" inside each campaign folder.
+# All blocks optional; typically only "collection" is needed.
 
-# Overrides  
-patterns:
-  pointcloud:
-    extensions:
-      - .laz
-      - .las
-labels:
-  pointcloud:
-    category: pointcloud
-    kind: pcl
-    stac_roles: ["data"]
-    "media_type": "application/vnd.laszip+copc"
+collection:
+  title: Pielach 2024-10-09
+  description: >-
+    Topo-bathymetric LiDAR survey of the Pielach river
+  license: other                 # SPDX id or "other"
+  # license_link: https://...    # rel=license link, recommended when license is "other"
+  providers:
+    - name: TU Wien, Department of Geodesy and Geoinformation
+      roles: [processor, host]
+      url: https://www.tuwien.at/mg/geo
+  keywords: [LiDAR, topo-bathymetry, point cloud, DSM, DTM, Pielach, river]
+
+# Common metadata copied onto every item, auto-rolled into the collection summaries.
+properties:
+  instruments: [riegl-vq-880-gii]
+  platform: airborne
+
+# CRS fallback, consulted only when a file carries no CRS of its own.
+# crs: EPSG:31256
+
+# Registry overrides (rarely needed). A pattern entry replaces the whole default entry;
+# a label entry must carry all keys. Example: also accept plain .las point clouds.
+# patterns:
+#   pointcloud:
+#     extensions: [.laz, .las]

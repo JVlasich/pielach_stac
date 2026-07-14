@@ -1,6 +1,14 @@
 import pytest
+from osgeo import gdal, osr
 
 from stac.catalog.extract import raster
+
+
+def _interior_rings(geom: dict) -> int:
+    """Total interior (hole) rings across a GeoJSON Polygon / MultiPolygon."""
+    if geom["type"] == "Polygon":
+        return len(geom["coordinates"]) - 1
+    return sum(len(poly) - 1 for poly in geom["coordinates"])
 
 
 def test_crs_fallback(tmp_path, write_tif, write_tif_no_crs):
@@ -44,3 +52,23 @@ def test_mask_footprint_shrinks_geometry(tmp_path, write_tif, write_masked_tif):
     assert masked.bbox_wgs84[0] >= full.bbox_wgs84[0] - 1e-9
     assert masked.bbox_wgs84[1] >= full.bbox_wgs84[1] - 1e-9
     assert masked.bbox_wgs84[3] <= full.bbox_wgs84[3] + 1e-9
+
+
+def test_footprint_drops_sliver_holes(tmp_path):
+    # 32x32 all-valid grid poked with single-pixel nodata holes (each far below (3px)^2).
+    # The exterior stays a rectangle; every sliver hole must be filtered out.
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(31256)
+    ds = gdal.GetDriverByName("GTiff").Create(str(tmp_path / "holed.tif"), 32, 32, 1, gdal.GDT_Byte)
+    ds.SetGeoTransform((-53000, 25, 0, 340000, 0, -25))
+    ds.SetProjection(srs.ExportToWkt())
+    band = ds.GetRasterBand(1)
+    band.SetNoDataValue(0)
+    band.Fill(255)
+    for x, y in [(5, 5), (9, 7), (14, 20), (20, 8), (24, 24),
+                 (6, 22), (23, 14), (17, 12), (11, 17), (22, 19)]:
+        band.WriteRaster(x, y, 1, 1, bytes([0]))
+    ds = None
+
+    meta = raster(tmp_path / "holed.tif")
+    assert _interior_rings(meta.geometry_wgs84) == 0, "sliver holes not filtered"

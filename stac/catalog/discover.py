@@ -292,6 +292,8 @@ def discover(folder: str | Path, policy_unknown: str = "warn", stem_patterns=Non
         item_id = _item_id(m.path.name, m.ext)
         if id_prefix and not _ISO_DATE.search(item_id):
             item_id = f"{id_prefix}_{item_id}"
+        # if item_id[:1].isupper():
+        #     log.warning(f"id starts with an uppercase letter (kept as-is): {item_id}")
         if item_id in seen_ids:
             raise ValueError(f"id collision: {item_id!r} from {seen_ids[item_id]} and {m.path.name}")
         seen_ids[item_id] = m.path.name
