@@ -14,8 +14,10 @@ catalog:
   # unknownAssets: warn
   # nonCloudNative: warn
   # only: null
+  # assetHrefs: absolute
   # nbThreads: null
   # exactComputation: true
+  # thumbnails: true
 
 tile_and_convert_pcl:
   # infile: null

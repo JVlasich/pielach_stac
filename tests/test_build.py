@@ -79,6 +79,39 @@ def test_build_item_and_collection(tmp_path, write_tif):
         build_collection("empty", {}, [])
 
 
+def test_build_item_filename_token_fallback(tmp_path, write_tif, caplog):
+    # deviating filename token beats the campaign date and warns
+    dev = tmp_path / "dev"
+    dev.mkdir()
+    write_tif(dev / "pielach_2014-10-16_dtm_etrs89.tif", 10)
+    with caplog.at_level(logging.WARNING):
+        item = build_item(discover(dev)[0], CAMP)
+    assert item.datetime == datetime(2014, 10, 16, tzinfo=timezone.utc)
+    assert any("deviates from campaign date" in r.getMessage() for r in caplog.records)
+
+    # no token: campaign date fallback
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    write_tif(plain / "some_dtm.tif", 10)
+    item = build_item(discover(plain)[0], CAMP)
+    assert item.datetime == datetime.combine(CAMP, datetime.min.time(), tzinfo=timezone.utc)
+
+
+def test_build_item_coords_rounded(tmp_path, write_tif):
+    write_tif(tmp_path / "pielach_2023-02-08_dtm_etrs89.tif", 10)
+    item = build_item(discover(tmp_path)[0], CAMP)
+
+    def leaves(v):
+        if isinstance(v, (int, float)):
+            yield v
+        else:
+            for c in v:
+                yield from leaves(c)
+
+    coords = list(leaves(item.geometry["coordinates"])) + list(item.bbox)
+    assert coords and all(v == round(v, 7) for v in coords)
+
+
 def test_pc_datetime_end_outlier_warns_not_clamped(caplog):
     # start on-campaign, a stray max GPS time ~5 months later (the 2024->2025 poisoning)
     camp = date(2024, 10, 9)

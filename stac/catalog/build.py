@@ -177,6 +177,13 @@ def _add_schema(item, uri: str) -> None:
 _SIDECAR_MEDIA = {".prj": "text/plain", ".tfw": "text/plain", ".aux.xml": "application/xml"}
 
 
+def _round_coords(v):
+    """WGS84 coords to 7 decimals (~1 cm), keeps footprint JSON small."""
+    if isinstance(v, (int, float)):
+        return round(v, 7)
+    return [_round_coords(c) for c in v]
+
+
 def build_item(product, campaign: date, *, created: datetime | None = None,
                properties: dict | None = None, crs: str | None = None) -> pystac.Item:
     """Produces and populates a Stac item from a discover::Product
@@ -196,12 +203,28 @@ def build_item(product, campaign: date, *, created: datetime | None = None,
     # baseline from the first asset (single-asset products today)
     _, m0, _ = extracted[0]
     span = resolve_pc_datetime(m0.pc_gps_time_min, m0.pc_gps_time_max, campaign)
-    start = span[0] if span else datetime.combine(campaign, datetime.min.time(), tzinfo=timezone.utc)
+    if span:
+        start = span[0]
+    else:
+        # no GPS time: filename ISO token beats the campaign date (file carries its true date)
+        try:
+            token = campaign_date(product.assets[0].path.name)
+            if token != campaign:
+                log.warning(f"filename date {token} deviates from campaign date {campaign}: {product.id}")
+        except ValueError:
+            token = campaign
+        start = datetime.combine(token, datetime.min.time(), tzinfo=timezone.utc)
+
+    geometry, bbox = m0.geometry_wgs84, m0.bbox_wgs84
+    if geometry is not None:
+        geometry = {**geometry, "coordinates": _round_coords(geometry["coordinates"])}
+    if bbox is not None:
+        bbox = [round(v, 7) for v in bbox]
 
     item = pystac.Item(
         id=product.id,
-        geometry=m0.geometry_wgs84,
-        bbox=m0.bbox_wgs84,
+        geometry=geometry,
+        bbox=bbox,
         datetime=start,
         properties={},
     )

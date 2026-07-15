@@ -49,7 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     cat.add_argument("--force", action=argparse.BooleanOptionalAction, default=None,
                      help="Skip the idempotency gate, rebuild every item (use after registry/code changes)")
     cat.add_argument("--assetHrefs", type=str, choices=["relative", "absolute"], default=None,
-                     help="Asset href style: relative (self-contained) or absolute (keep build-time paths) (default: relative)")
+                     help="Asset href style: relative (self-contained) or absolute (keep build-time paths); "
+                          "thumbnails are always relative (default: absolute)")
     cat.add_argument("--thumbnails", action=argparse.BooleanOptionalAction, default=None,
                      help="Render PNG thumbnails for raster items according to registry (default: on)")
 

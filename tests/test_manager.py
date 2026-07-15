@@ -7,11 +7,11 @@ import pystac
 from stac.catalog.manager import update_catalog
 
 
-def _raw_data_href(out: Path, item_id: str) -> str:
-    """The on-disk (un-resolved) href of an item's first data asset."""
+def _raw_href(out: Path, item_id: str, role: str) -> str:
+    """The on-disk (un-resolved) href of an item's first asset with the given role."""
     item_json = next(out.rglob(f"{item_id}.json"))
     d = json.loads(item_json.read_text(encoding="utf-8"))
-    a = next(a for a in d["assets"].values() if "data" in (a.get("roles") or []))
+    a = next(a for a in d["assets"].values() if role in (a.get("roles") or []))
     return a["href"]
 
 
@@ -64,12 +64,16 @@ def test_subcollection_id_not_doubled_and_asset_href_modes(tmp_path, write_tif):
     coll = cat.get_child("pielach_2024-10-09")
     assert coll.get_child("pielach_2024-10-09_tiles") is not None
     assert coll.get_child("pielach_2024-10-09_pielach_2024-10-09_tiles") is None
-    # relative (default) asset href climbs out of catalog/
-    assert _raw_data_href(out, "pielach_2024-10-09_dsm_etrs89").startswith("..")
+    # absolute (default) data href keeps the build-time path; thumbnail stays relative
+    assert Path(_raw_href(out, "pielach_2024-10-09_dsm_etrs89", "data")).is_absolute()
+    assert (_raw_href(out, "pielach_2024-10-09_dsm_etrs89", "thumbnail")
+            == "./pielach_2024-10-09_dsm_etrs89_thumbnail.png")
 
-    # absolute mode keeps the build-time absolute path
-    update_catalog(tmp_path, out, force=True, asset_hrefs="absolute")
-    assert Path(_raw_data_href(out, "pielach_2024-10-09_dsm_etrs89")).is_absolute()
+    # relative mode: data href climbs out of catalog/, thumbnail unchanged
+    update_catalog(tmp_path, out, force=True, asset_hrefs="relative")
+    assert _raw_href(out, "pielach_2024-10-09_dsm_etrs89", "data").startswith("..")
+    assert (_raw_href(out, "pielach_2024-10-09_dsm_etrs89", "thumbnail")
+            == "./pielach_2024-10-09_dsm_etrs89_thumbnail.png")
 
 
 def test_update_catalog_staged_idempotency(tmp_path, write_tif):

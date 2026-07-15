@@ -269,7 +269,7 @@ def update_catalog(
     force:      bool = False,
     validate:   bool = False,
     only: str | None = None,
-    asset_hrefs: str = "relative",
+    asset_hrefs: str = "absolute",
     policy_stale:   str = "warn",
     policy_unknown: str = "warn",
     policy_non_cn:  str = "warn",
@@ -289,7 +289,8 @@ def update_catalog(
         - force ; skip checks, rebuild all
         - validate ; calls pystac.validate at the end (requires dependency)
         - only ; look at a single campaign
-        - asset_hrefs ; "relative" (self-contained) or "absolute" (keep build-time paths)
+        - asset_hrefs ; "absolute" (keep build-time paths, default) or "relative"
+          (self-contained); thumbnail assets are always written relative
         - policy_unknown ; in ("warn","skip","raise") decides how to handle unknown assets
         - policy_non_cn ; in ("warn","skip","raise") decides how to handle non cloud-native assets
         - policy_stale ; in ("warn","raise", "remove") decides how to handle stale collections
@@ -359,6 +360,12 @@ def update_catalog(
                         log.warning(f"thumbnail failed for {item.id}: {e}")
             if asset_hrefs == "relative":
                 cat.make_all_asset_hrefs_relative()
+            # thumbnails live inside the catalog tree: always relative, both href modes
+            for item in cat.get_items(recursive=True):
+                for asset in item.assets.values():
+                    if "thumbnail" in (asset.roles or []):
+                        asset.href = pystac.utils.make_relative_href(
+                            asset.get_absolute_href(), item.get_self_href())
             cat.save(catalog_type=pystac.CatalogType.SELF_CONTAINED)
             log.info(f"catalog saved: {out_dir}")
             if validate:
