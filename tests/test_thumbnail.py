@@ -62,3 +62,27 @@ def test_no_upscale(tmp_path):
 
     _, w, h = _open(href)
     assert (w, h) == (8, 8)               # already under MAX_EDGE, kept native
+
+
+def _las(path, n=800):
+    import laspy
+    import numpy as np
+    rng = np.random.default_rng(0)
+    x = np.concatenate([rng.uniform(0, 100, n), [0.0, 100.0, 0.0, 100.0]])  # corners pin the extent
+    y = np.concatenate([rng.uniform(0, 50, n), [0.0, 0.0, 50.0, 50.0]])
+    z = np.concatenate([rng.uniform(0, 10, n), [0.0, 0.0, 0.0, 0.0]])
+    las = laspy.LasData(laspy.LasHeader(point_format=3))
+    las.x, las.y, las.z = x, y, z
+    las.write(str(path))
+
+
+def test_pointcloud(tmp_path):
+    _las(tmp_path / "pc.las")
+    item = _Item(tmp_path / "item" / "item.json", "pc")
+    href = render_thumbnail(item, tmp_path / "pc.las", "pointcloud")
+
+    assert href.endswith("pc_thumbnail.png")
+    drv, w, h = _open(href)
+    assert drv == "PNG"
+    assert max(w, h) == MAX_EDGE          # capped
+    assert (w, h) == (512, 256)           # extent 100x50 -> x longer

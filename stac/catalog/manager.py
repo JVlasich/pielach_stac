@@ -164,9 +164,12 @@ def process_campaign(
                 failed_items.append(p)
                 continue
             a0 = p.assets[0]
-            if thumbnails and thumb_jobs is not None and a0.thumbnail and a0.kind == "raster":
-                kind = "rgb" if a0.category == "orthophoto" else "hillshade"
-                thumb_jobs.append((p.item, a0.path, kind))
+            if thumbnails and thumb_jobs is not None and a0.thumbnail:
+                if a0.kind == "raster":
+                    kind = "rgb" if a0.category == "orthophoto" else "hillshade"
+                    thumb_jobs.append((p.item, a0.path, kind))
+                elif a0.kind == "pcl":
+                    thumb_jobs.append((p.item, a0.path, "pointcloud"))
         rebuilt += 1
 
     if failed_items:
