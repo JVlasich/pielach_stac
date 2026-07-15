@@ -76,6 +76,12 @@ STEM_PATTERNS: dict[str, dict[str, object]] = {
         "forbid": [],
         "extensions": [".tif", ".tiff"],
     },
+    "log": {
+        "require": [],
+        "forbid": [],
+        "extensions": [".log"],
+    },
+
 }
 
 
@@ -95,7 +101,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "application/vnd.laszip",
         "extensions": ["pointcloud", "projection", "file"],
-        "thumbnail":  True,
+        "thumbnail":  False,
     },
     "pointcloud_las": {
         "category":   "pointcloud",
@@ -103,7 +109,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "application/vnd.las",
         "extensions": ["pointcloud", "projection", "file"],
-        "thumbnail":  True,
+        "thumbnail":  False,
     },
 
     # orthophoto: RGB orthomosaic, primary deliverable -> data + visual; eo for bands
@@ -174,6 +180,14 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": [],
         "media_type": "image/tiff; application=geotiff",
+        "extensions": [],
+        "thumbnail":  False,
+    },
+    "log": {
+        "category":   "ignore",
+        "kind":       "",
+        "stac_roles": [],
+        "media_type": "",
         "extensions": [],
         "thumbnail":  False,
     },

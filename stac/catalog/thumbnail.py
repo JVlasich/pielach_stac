@@ -1,5 +1,6 @@
 """Render a downscaled PNG thumbnail for a raster item (ortho RGB / DSM-DTM hillshade)."""
 
+import functools
 import logging
 from pathlib import Path
 
@@ -9,6 +10,17 @@ gdal.UseExceptions()
 log = logging.getLogger(__name__)
 
 MAX_EDGE = 512  # longest thumbnail edge in px
+
+
+@functools.lru_cache(maxsize=1) # runs function only first time its called
+def pcl_thumbnails_available() -> bool:
+    """True if laspy + lazrs (vendored in libs\\, win_amd64 cp310) import here."""
+    try:
+        import laspy  # noqa: F401
+        import lazrs  # noqa: F401
+        return True
+    except Exception:
+        return False
 
 
 def render_thumbnail(item, src_path, kind: str) -> str:
@@ -46,7 +58,7 @@ def render_thumbnail(item, src_path, kind: str) -> str:
     return out.resolve().as_posix()
 
 
-COARSE_N = 4e5  # decimation target for plain (non-COPC) laz/las
+COARSE_N = int(4e5)  # decimation target for plain (non-COPC) laz/las
 
 
 def _coarse_xyz(src: str):
@@ -74,6 +86,7 @@ def _render_pcl(src: str, out: Path) -> str:
     """Top-down elevation colormap, max-Z per cell, longest edge MAX_EDGE, empty cells transparent."""
     import matplotlib.image as mpimg
     import numpy as np
+    from scipy import ndimage
     from scipy.stats import binned_statistic_2d
 
     x, y, z = _coarse_xyz(src)
@@ -83,7 +96,32 @@ def _render_pcl(src: str, out: Path) -> str:
     else:
         w, h = (max(1, round(MAX_EDGE * ex / ey)) if ey else 1), MAX_EDGE
     grid, *_ = binned_statistic_2d(x, y, z, statistic="max", bins=[w, h])  # nan = empty cell
-    vmin, vmax = np.nanpercentile(grid, [2, 98])  # guard implausible high/low returns
+    # nearest-fill small holes, keep real voids transparent
+    nan = np.isnan(grid)
+    dist, (ix, iy) = ndimage.distance_transform_edt(nan, return_indices=True)
+    small = nan & (dist <= 2)  # fills gaps up to ~4 px wide; bump if speckle persists
+    grid[small] = grid[ix[small], iy[small]]
+    vmin, vmax = np.nanpercentile(grid, [10, 90])  # guard implausible high/low returns
     # grid is [x, y]; transpose to rows=y, origin lower keeps north up
-    mpimg.imsave(str(out), grid.T, cmap="Blues", vmin=vmin, vmax=vmax, origin="lower")
+    mpimg.imsave(str(out), grid.T, cmap="cividis", vmin=vmin, vmax=vmax, origin="lower")
     return out.resolve().as_posix()
+
+
+if __name__ == "__main__":
+    # self-check: python -m stac.catalog.thumbnail <src> [<dest dir>]
+    import sys
+    from types import SimpleNamespace
+    import time
+
+    src = Path(sys.argv[1]).resolve()
+    dst = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else Path.cwd()
+    if src.name.endswith((".las", ".laz")):
+        kind = "pointcloud"
+    else:
+        ds = gdal.Open(str(src))
+        kind = "rgb" if ds.RasterCount >= 3 else "hillshade"
+        ds = None
+    item = SimpleNamespace(id=src.stem.removesuffix(".copc"),
+                           get_self_href=lambda: str(dst / "item.json"))
+    start = time.time()
+    print(render_thumbnail(item, src, kind), f" ({round(time.time()-start,1)}s)")

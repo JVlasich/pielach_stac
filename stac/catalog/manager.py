@@ -15,7 +15,7 @@ from .build import build_collection, build_item, campaign_date
 from .discover import discover
 from .extract import file_meta
 from .hierarchy import resolve_hierarchy
-from .thumbnail import render_thumbnail
+from .thumbnail import pcl_thumbnails_available, render_thumbnail
 
 log = logging.getLogger(__name__)
 
@@ -354,7 +354,13 @@ def update_catalog(
         if not dry_run:
             cat.normalize_hrefs(str(out_dir))
             if thumbnails:
+                # thumb creation for pcl -> make sure laspy can load
+                pcl_ok = pcl_thumbnails_available()
+                if not pcl_ok and any(k == "pointcloud" for *_, k in thumb_jobs):
+                    log.warning("laspy/lazrs unavailable; skipping point-cloud thumbnails")
                 for item, src, kind in thumb_jobs:
+                    if kind == "pointcloud" and not pcl_ok:
+                        continue
                     try:
                         href = render_thumbnail(item, src, kind)
                         item.add_asset("thumbnail", pystac.Asset(
