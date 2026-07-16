@@ -123,6 +123,20 @@ def _dtype_name(gdal_type: int) -> str:
     return "uint8" if name == "Byte" else name.lower()
 
 
+def _finite(v):
+    """Non-finite floats to None, item JSON must stay parseable (NaN is invalid JSON)."""
+    return None if isinstance(v, float) and not math.isfinite(v) else v
+
+
+def _json_nodata(v):
+    """Non-finite nodata to the raster extension's string forms ("nan", "inf", "-inf")."""
+    if isinstance(v, float) and math.isnan(v):
+        return "nan"
+    if isinstance(v, float) and math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+
 def _wgs84_footprint(srs, proj_bbox: list) -> tuple[dict, list]:
     """Native CRS bbox -> WGS84 (GeoJSON polygon, bbox) via densified edge transform,
     bundled GDAL 3.1 has no TransformBounds (3.4+)."""
@@ -255,7 +269,7 @@ def raster(path: str, crs: str | None = None) -> AssetMeta:
     bands = []
     for i in range(1, ds.RasterCount + 1):
         b = ds.GetRasterBand(i)
-        minimum, maximum, mean, stddev = b.ComputeStatistics(False)
+        minimum, maximum, mean, stddev = (_finite(v) for v in b.ComputeStatistics(False))
         if b.GetMaskFlags() == gdal.GMF_ALL_VALID:
             valid_percent, count = 100.0, w * h
         else:
@@ -266,7 +280,7 @@ def raster(path: str, crs: str | None = None) -> AssetMeta:
         bands.append({
             "index":        i,
             "data_type":    _dtype_name(b.DataType),
-            "nodata":       b.GetNoDataValue(),
+            "nodata":       _json_nodata(b.GetNoDataValue()),
             "color_interp": gdal.GetColorInterpretationName(b.GetColorInterpretation()).lower(),
             "description":  b.GetDescription() or None,
             "unit":         b.GetUnitType() or None,
@@ -345,12 +359,13 @@ def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
         {
             "name":    _attr_name(a),
             "count":   a.getCount(),
-            "minimum": a.getMin(),
-            "maximum": a.getMax(),
-            "average": a.getMean(),
-            "stddev":  a.getStd(),
+            "minimum": _finite(a.getMin()),
+            "maximum": _finite(a.getMax()),
+            "average": _finite(a.getMean()),
+            "stddev":  _finite(a.getStd()),
         } for a in attributes if a.getMin() != a.getMax()  # constant dims carry no signal
     ]
+    statistics = [{k: v for k, v in s.items() if v is not None} for s in statistics]
 
     # schemas list every dimension the file has, unfiltered (pc:schemas = truth)
     schemas = [
@@ -364,7 +379,8 @@ def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
     # raw GPSTime, resolved to UTC in build; found by shortname so the display
     # name stays free; constant GPSTime is filtered out
     gps_attr = next((a for a in attributes
-                     if a.getName().split()[0] == "GPSTime" and a.getMin() != a.getMax()), None)
+                     if a.getName().split()[0] == "GPSTime" and a.getMin() != a.getMax()
+                     and math.isfinite(a.getMin()) and math.isfinite(a.getMax())), None)
     gps = {"minimum": gps_attr.getMin(), "maximum": gps_attr.getMax()} if gps_attr else None
 
     wkt = stats.getCoordRefSys()

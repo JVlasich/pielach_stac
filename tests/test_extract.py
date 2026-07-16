@@ -1,3 +1,6 @@
+import json
+import struct
+
 import pytest
 from osgeo import gdal, osr
 
@@ -52,6 +55,29 @@ def test_mask_footprint_shrinks_geometry(tmp_path, write_tif, write_masked_tif):
     assert masked.bbox_wgs84[0] >= full.bbox_wgs84[0] - 1e-9
     assert masked.bbox_wgs84[1] >= full.bbox_wgs84[1] - 1e-9
     assert masked.bbox_wgs84[3] <= full.bbox_wgs84[3] + 1e-9
+
+
+def test_nan_nodata_stays_json_safe(tmp_path):
+    # float raster with nodata=NaN: bands must serialize as strict JSON
+    # (raw NaN would leak as invalid JSON into the item files)
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(31256)
+    ds = gdal.GetDriverByName("GTiff").Create(str(tmp_path / "nan.tif"), 4, 4, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((-53000, 25, 0, 340000, 0, -25))
+    ds.SetProjection(srs.ExportToWkt())
+    band = ds.GetRasterBand(1)
+    band.SetNoDataValue(float("nan"))
+    band.Fill(5.0)
+    band.WriteRaster(0, 0, 2, 4, struct.pack("<8f", *[float("nan")] * 8),
+                     buf_type=gdal.GDT_Float32)
+    ds = None
+
+    meta = raster(tmp_path / "nan.tif")
+    b = meta.raster_bands[0]
+    assert b["nodata"] == "nan"
+    s = b["statistics"]
+    assert s["minimum"] == 5.0 and s["maximum"] == 5.0, "stats over valid pixels only"
+    json.dumps(meta.raster_bands, allow_nan=False)  # raises on any leftover NaN/Inf
 
 
 def test_footprint_drops_sliver_holes(tmp_path):

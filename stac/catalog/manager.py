@@ -298,8 +298,9 @@ def update_catalog(
     Campaign dirs = direct subdirs with an ISO date token; failures are isolated.
 
     Collections without a campaign
-    dir on disk follow the stale policy (removal is skipped while any campaign
-    failed, since a failed campaign's id is unknown).
+    dir on disk follow the stale policy. The sweep acts only on clean runs:
+    while any campaign failed its collection id is unknown, so flagged
+    collections are kept with a warning regardless of policy.
 
     Arguments:
         - root ; Path to be scanned for subfolders
@@ -362,9 +363,15 @@ def update_catalog(
             camp_ids = {i for i, (kind, _) in seen_ids.items() if kind == "collection"}
             stale_colls = sorted(c.id for c in cat.get_children() if c.id not in camp_ids)
         for cid in stale_colls:
+            # a failed campaign never registers its id, so its collection would be
+            # misread as stale; act (raise/remove) only on clean runs
+            if failed:
+                log.warning(f"collection kept, no surviving campaign this run "
+                            f"(dir gone or campaign failed): {cid}")
+                continue
             if policy_stale == "raise":
                 raise ValueError(f"stale collection {cid}: no campaign dir in {root}")
-            if policy_stale == "remove" and not failed and not dry_run:
+            if policy_stale == "remove" and not dry_run:
                 cat.remove_child(cid)
                 log.info(f"removed stale collection: {cid}")
             else:
