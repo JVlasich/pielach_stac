@@ -14,6 +14,7 @@ catalog:
   # unknownAssets: warn
   # nonCloudNative: warn
   # only: null
+  # idCollisions: warn
   # assetHrefs: absolute
   # nbThreads: null
   # exactComputation: true

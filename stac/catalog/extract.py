@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import mmap
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -315,6 +316,14 @@ def raster(path: str, crs: str | None = None) -> AssetMeta:
     )
 
 
+def _attr_name(a) -> str:
+    """getName() returns "Shortname (Longname)"; the longname disambiguates dims
+    that share a shortname (e.g. two Amplitudes). Whole string when no parens."""
+    full = a.getName()
+    m = re.search(r"\((.*)\)\s*$", full)
+    return m.group(1) if m else full
+
+
 def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
     """Extracts relevant pointcloud metadata using opalsInfo.
     Attributes are only extracted if they have more than one possible value.
@@ -332,10 +341,9 @@ def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
     stats = inf.statistic[0]
     attributes = stats.getAttributes()
 
-    # getName() returns "short long", split()[0] keeps the short name
     statistics = [
         {
-            "name":    a.getName().split()[0],
+            "name":    _attr_name(a),
             "count":   a.getCount(),
             "minimum": a.getMin(),
             "maximum": a.getMax(),
@@ -347,14 +355,17 @@ def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
     # schemas list every dimension the file has, unfiltered (pc:schemas = truth)
     schemas = [
         {
-            "name": a.getName().split()[0],
+            "name": _attr_name(a),
             "size": a.getStorageSize(),
             "type": a.getType()  # DM::ColumnType int mapped in build.py
         } for a in attributes # constant dimns are still extracted
     ]
 
-    # raw GPSTime, resolved to UTC in build; constant GPSTime is filtered out
-    gps = next((s for s in statistics if s["name"] == "GPSTime"), None)
+    # raw GPSTime, resolved to UTC in build; found by shortname so the display
+    # name stays free; constant GPSTime is filtered out
+    gps_attr = next((a for a in attributes
+                     if a.getName().split()[0] == "GPSTime" and a.getMin() != a.getMax()), None)
+    gps = {"minimum": gps_attr.getMin(), "maximum": gps_attr.getMax()} if gps_attr else None
 
     wkt = stats.getCoordRefSys()
     if wkt:
@@ -454,10 +465,10 @@ if __name__ == "__main__":
     if target.name.lower().endswith((".laz", ".las")):
         meta = pointcloud(target)
         assert meta.pc_count, "no points"
-        # schemas = every dim (unfiltered), stats subset, short names only
+        # schemas = every dim (unfiltered), stats subset, longnames verbatim and unique
         schema_names = {s["name"] for s in meta.pc_schemas}
         assert {s["name"] for s in meta.pc_statistics} <= schema_names
-        assert all(" " not in n for n in schema_names), schema_names
+        assert len(schema_names) == len(meta.pc_schemas), schema_names
         lonmin, latmin, lonmax, latmax = meta.bbox_wgs84
         assert -180 <= lonmin <= lonmax <= 180 and -90 <= latmin <= latmax <= 90, meta.bbox_wgs84
         log.info(f"{target.name}: count={meta.pc_count} density={meta.pc_density:.2f} epsg={meta.proj_epsg}")

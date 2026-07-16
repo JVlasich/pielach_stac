@@ -37,6 +37,7 @@ def render_thumbnail(item, src_path, kind: str) -> str:
 
     ds = gdal.Open(src)
     sw, sh, nbands = ds.RasterXSize, ds.RasterYSize, ds.RasterCount
+    has_alpha = nbands >= 4 and ds.GetRasterBand(4).GetColorInterpretation() == gdal.GCI_AlphaBand
     ds = None
     if max(sw, sh) <= MAX_EDGE:
         w, h = sw, sh
@@ -50,8 +51,8 @@ def render_thumbnail(item, src_path, kind: str) -> str:
         hs = gdal.DEMProcessing("", small, "hillshade", format="MEM")
         gdal.Translate(str(out), hs, format="PNG")  # PNG driver is CreateCopy-only
     else:
-        # RGB bands 1-3, drops a real alpha (nodata edges show dark, is okay)
-        bands = [1, 2, 3] if nbands >= 3 else [1]
+        # RGBA when the source carries an alpha band, keeps nodata edges transparent
+        bands = [1, 2, 3, 4] if has_alpha else ([1, 2, 3] if nbands >= 3 else [1])
         gdal.Translate(str(out), src, format="PNG", width=w, height=h,
                        bandList=bands, resampleAlg="average")
 

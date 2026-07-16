@@ -259,7 +259,11 @@ def build_item(product, campaign: date, *, created: datetime | None = None,
     item.common_metadata.created = created or now
     item.common_metadata.updated = now
     if properties:
-        item.properties.update(properties)
+        # campaign-wide base, then byLabel (registry label), then byId; null drops a base key
+        merged = {k: v for k, v in properties.items() if k not in ("byLabel", "byId")}
+        merged.update((properties.get("byLabel") or {}).get(product.assets[0].label) or {})
+        merged.update((properties.get("byId") or {}).get(product.id) or {})
+        item.properties.update({k: v for k, v in merged.items() if v is not None})
 
     log.debug(f"built item {item.id} ({len(extracted)} asset(s))")
     return item

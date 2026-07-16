@@ -33,6 +33,7 @@ CATALOG_DEFAULTS = {
     "unknownAssets": "warn", # warn | skip | raise for unclassifiable files
     "nonCloudNative": "warn",# warn | skip | raise for files without a CN twin
     "only": None,            # glob over campaign dir names; skips the stale-collection sweep
+    "idCollisions": "warn",  # warn | raise for duplicate item/subcollection ids across campaigns
     "assetHrefs": "absolute",# relative (self-contained) | absolute (keep build-time paths)
     "nbThreads": None,       # opals thread count, None = opals default (all CPUs)
     "exactComputation": True,# exact point statistics (full scan) vs header-only (fast, no stats)
@@ -45,6 +46,23 @@ def load_sidecar(path) -> dict:
     """Read a per-campaign sidecar YAML into a dict
     (collection / patterns / labels / hierarchy / properties blocks / crs fallback)."""
     return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+
+
+def _register_id(seen: dict | None, new_id: str, kind: str, source: str, policy: str) -> None:
+    """One id namespace per run (root/collections/subcollections/items).
+    Collision: warn keeps the first owner, raise fails the campaign. Collection ids
+    always raise: the second campaign replaces the first one's collection in the root,
+    so warn cannot keep the first owner, it merges two campaigns into one collection."""
+    if seen is None:
+        return
+    if new_id in seen:
+        k2, s2 = seen[new_id]
+        msg = f"id collision: {new_id!r} ({kind}, {source}) already used by {k2} ({s2})"
+        if policy == "raise" or kind == "collection":
+            raise ValueError(msg)
+        log.warning(msg)
+        return
+    seen[new_id] = (kind, source)
 
 
 # --- idempotency gate ---
@@ -85,8 +103,8 @@ def process_campaign(
     policy_unknown: str = "warn",
     policy_non_cn:  str = "warn",
     policy_stale:   str = "warn",
-    seen_camp_ids: set | None = None,
-    seen_item_ids: set | None = None,
+    policy_ids:     str = "warn",
+    seen_ids: dict | None = None,
     thumbnails: bool = True,
     thumb_jobs: list | None = None
 ) -> dict:
@@ -104,13 +122,14 @@ def process_campaign(
         - policy_unknown ; in ("warn","skip","raise") decides how to handle unknown assets
         - policy_non_cn ; in ("warn","skip","raise") decides how to handle non cloud-native assets
         - policy_stale ; in ("warn","raise", "remove") decides how to handle existing items that were removed from disk
-        - seen_camp_ids ; passed in update_catalog() and mutated inplace
-        - seen_item_ids ; passed in update_catalog() and mutated inplace
+        - policy_ids ; in ("warn","raise") decides how to handle id collisions in the run namespace
+          (collection ids always raise, see _register_id)
+        - seen_ids ; {id: (kind, source)} passed in update_catalog() and mutated inplace
     Returns:
         {"rebuilt": n, "reused": n, "stale": n, "failed": n}
     Exceptions:
         - missing campaign.yaml
-        - camp/item id collisions with earlier campaigns of the same run
+        - item/subcollection id collisions when policy_ids == "raise", collection ids always
     """
     folder = Path(folder)
     sc = load_sidecar(folder / "campaign.yaml")
@@ -118,10 +137,7 @@ def process_campaign(
 
     camp = campaign_date(folder.name)
     camp_id = (sc.get("collection") or {}).get("id") or f"pielach_{camp.isoformat()}"
-    if seen_camp_ids is not None:
-        if camp_id in seen_camp_ids:
-            raise ValueError(f"campaign id {camp_id!r} already used by another folder this run")
-        seen_camp_ids.add(camp_id)
+    _register_id(seen_ids, camp_id, "collection", folder.name, policy_ids)
 
     products = discover(folder, policy_unknown=policy_unknown, stem_patterns=sp, labels=lb,
                         policy_non_cn=policy_non_cn, id_prefix=camp_id)
@@ -130,11 +146,8 @@ def process_campaign(
         log.warning(f"no products in {folder.name}, campaign {camp_id} untouched")
         return {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 0}
 
-    if seen_item_ids is not None:
-        dupes = {p.id for p in products} & seen_item_ids
-        if dupes:
-            raise ValueError(f"item ids already used by another campaign: {sorted(dupes)}")
-        seen_item_ids.update(p.id for p in products)
+    for p in products:
+        _register_id(seen_ids, p.id, "item", folder.name, policy_ids)
 
     old = root.get_child(camp_id)
     existing, parent_of = {}, {}
@@ -145,6 +158,16 @@ def process_campaign(
             parent_of[i.id] = coll.id if coll else camp_id
 
     props = sc.get("properties") or {}
+    # typo guard: override keys must hit something in this campaign
+    labels = {a.label for p in products for a in p.assets}
+    for lbl in (props.get("byLabel") or {}):
+        if lbl not in labels:
+            log.warning(f"properties.byLabel matches no product label: {lbl}")
+    item_ids = {p.id for p in products}
+    for iid in (props.get("byId") or {}):
+        if iid not in item_ids:
+            log.warning(f"properties.byId matches no item id: {iid}")
+
     rebuilt = reused = 0
     failed_items = []
     for p in products:
@@ -202,25 +225,17 @@ def process_campaign(
 
     nodes = resolve_hierarchy(products, sc.get("hierarchy"))
     children = []
-    sub_ids: set = set()
     for node in nodes[1:]:
         if not node.products:
             continue
         # the subdir already carries the campaign (pre-tool writes <stem>_tiles), take it as-is
         sub_id = node.name
-        if sub_id == camp_id or sub_id in sub_ids:
-            log.warning(f"subcollection id collides with another id: {sub_id}")
-        sub_ids.add(sub_id)
+        _register_id(seen_ids, sub_id, "subcollection", folder.name, policy_ids)
         cat = node.products[0].category
         meta = {"title": node.title or f"{cat} tiles",
                 "description": node.description or f"Tiled {cat} for campaign {camp_id}."}
         items = [p.item for p in node.products] + stale_clones.pop(sub_id, [])
         children.append(build_collection(sub_id, meta, items))
-
-    # honest reporting: an item named exactly like a collection stays as-is, just flag it
-    for pid in sorted(p.id for p in products):
-        if pid == camp_id or pid in sub_ids:
-            log.warning(f"item id equals a collection id: {pid}")
 
     flat_items = [p.item for p in nodes[0].products] + stale_clones.pop(camp_id, [])
 
@@ -276,6 +291,7 @@ def update_catalog(
     policy_stale:   str = "warn",
     policy_unknown: str = "warn",
     policy_non_cn:  str = "warn",
+    policy_ids:     str = "warn",
     thumbnails:     bool = True,
 ) -> dict:
     """Re-run the whole catalog over a processed-datasets root (idempotent).
@@ -297,6 +313,9 @@ def update_catalog(
         - policy_unknown ; in ("warn","skip","raise") decides how to handle unknown assets
         - policy_non_cn ; in ("warn","skip","raise") decides how to handle non cloud-native assets
         - policy_stale ; in ("warn","raise", "remove") decides how to handle stale collections
+        - policy_ids ; in ("warn","raise") decides how to handle id collisions
+          (one namespace: root + collections + subcollections + items;
+          collection ids always raise, they cannot be resolved by keeping the first owner)
 
     Returns:
         {"ok": {campaign: counts}, "failed": {campaign: error},
@@ -311,7 +330,7 @@ def update_catalog(
     root_logger.addHandler(warns)
     try:
         ok, failed = {}, {}
-        seen_camp_ids, seen_item_ids = set(), set()
+        seen_ids: dict = {cat.id: ("catalog", "root")}
         # (item, src_path, kind) for rebuilt raster items, rendered after normalize
         thumb_jobs: list = []
         for d in sorted(root.iterdir()):
@@ -330,7 +349,7 @@ def update_catalog(
                 ok[d.name] = process_campaign(
                     d, cat, policy_stale=policy_stale, dry_run=dry_run, force=force,
                     policy_unknown=policy_unknown, policy_non_cn=policy_non_cn,
-                    seen_camp_ids=seen_camp_ids, seen_item_ids=seen_item_ids,
+                    policy_ids=policy_ids, seen_ids=seen_ids,
                     thumbnails=thumbnails, thumb_jobs=thumb_jobs)
             except Exception as e:
                 log.exception(f"FAILED: {d.name}")
@@ -340,7 +359,8 @@ def update_catalog(
             stale_colls = []
             log.info("only-filtered run: stale-collection sweep skipped")
         else:
-            stale_colls = sorted(c.id for c in cat.get_children() if c.id not in seen_camp_ids)
+            camp_ids = {i for i, (kind, _) in seen_ids.items() if kind == "collection"}
+            stale_colls = sorted(c.id for c in cat.get_children() if c.id not in camp_ids)
         for cid in stale_colls:
             if policy_stale == "raise":
                 raise ValueError(f"stale collection {cid}: no campaign dir in {root}")

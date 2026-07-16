@@ -14,9 +14,18 @@ collection:
   keywords: [LiDAR, topo-bathymetry, point cloud, DSM, DTM, Pielach, river]
 
 # Common metadata copied onto every item, auto-rolled into the collection summaries.
+# Override tiers: campaign-wide base -> byLabel (registry label) -> byId (exact item id).
+# A null value drops the key for the matched items. It only cancels a base value set here,
+# extracted keys (gsd, proj:*, pc:*) stay on the item.
 properties:
   instruments: [riegl-vq-880-gii]
   platform: airborne
+  # byLabel:
+  #   orthophoto:
+  #     instruments: null        # camera product, scanner does not apply
+  # byId:
+  #   pielach_2024-10-09_DSM_etrs89:
+  #     some_key: value
 
 # CRS fallback, consulted only when a file carries no CRS of its own.
 # crs: EPSG:31256

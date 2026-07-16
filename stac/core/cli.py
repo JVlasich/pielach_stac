@@ -62,6 +62,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Files matching no registry pattern (default: warn)")
     pol.add_argument("--nonCloudNative", type=str, choices=["warn", "skip", "raise"], default=None,
                      help="Files without a cloud-native twin: catalog with warning, drop, or abort (default: warn)")
+    pol.add_argument("--idCollisions", type=str, choices=["warn", "raise"], default=None,
+                     help="Duplicate item/subcollection ids across campaigns: warn and keep the first "
+                          "owner, or fail the campaign. Collection ids and collisions inside one "
+                          "campaign always fail (default: warn)")
 
     deb = parser.add_argument_group("Debug options")
 
@@ -114,8 +118,8 @@ def main():
     res = manager.update_catalog(
         root, out, policy_stale=cfg["stale"], dry_run=cfg["dryRun"], force=cfg["force"],
         validate=cfg["validate"], policy_unknown=cfg["unknownAssets"],
-        policy_non_cn=cfg["nonCloudNative"], only=cfg["only"], asset_hrefs=cfg["assetHrefs"],
-        thumbnails=cfg["thumbnails"])
+        policy_non_cn=cfg["nonCloudNative"], policy_ids=cfg["idCollisions"],
+        only=cfg["only"], asset_hrefs=cfg["assetHrefs"], thumbnails=cfg["thumbnails"])
     ok, failed = res["ok"], res["failed"]
 
     # Summary
