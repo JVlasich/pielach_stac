@@ -23,6 +23,29 @@ def pcl_thumbnails_available() -> bool:
         return False
 
 
+def _data_window(band, sw: int, sh: int) -> list[int]:
+    """[xoff, yoff, xsize, ysize] bounding the valid-data pixels, so a thumbnail
+    depicts the item footprint/bbox instead of the full grid (nodata margins).
+    Full grid when the band is all-valid or the mask is unusable."""
+    import numpy as np
+    if band.GetMaskFlags() == gdal.GMF_ALL_VALID:
+        return [0, 0, sw, sh]
+    scale = max(1.0, max(sw, sh) / MAX_EDGE)
+    bw, bh = max(1, round(sw / scale)), max(1, round(sh / scale))
+    m = band.GetMaskBand().ReadAsArray(0, 0, sw, sh, buf_xsize=bw, buf_ysize=bh)
+    if m is None:
+        return [0, 0, sw, sh]
+    valid = m > 0
+    rows, cols = np.where(valid.any(axis=1))[0], np.where(valid.any(axis=0))[0]
+    if not len(rows) or not len(cols):
+        return [0, 0, sw, sh]
+    fx, fy = sw / bw, sh / bh
+    xoff, yoff = int(cols[0] * fx), int(rows[0] * fy)
+    xsize = min(sw - xoff, int(round((cols[-1] + 1) * fx)) - xoff)
+    ysize = min(sh - yoff, int(round((rows[-1] + 1) * fy)) - yoff)
+    return [xoff, yoff, xsize, ysize]
+
+
 def render_thumbnail(item, src_path, kind: str) -> str:
     """Write <item_dir>/<item_id>_thumbnail.png next to the item JSON, return its abs href.
 
@@ -38,15 +61,17 @@ def render_thumbnail(item, src_path, kind: str) -> str:
     ds = gdal.Open(src)
     sw, sh, nbands = ds.RasterXSize, ds.RasterYSize, ds.RasterCount
     has_alpha = nbands >= 4 and ds.GetRasterBand(4).GetColorInterpretation() == gdal.GCI_AlphaBand
+    win = _data_window(ds.GetRasterBand(1), sw, sh)  # crop nodata margin so thumb matches bbox
     ds = None
-    if max(sw, sh) <= MAX_EDGE:
-        w, h = sw, sh
+    cw, ch = win[2], win[3]
+    if max(cw, ch) <= MAX_EDGE:
+        w, h = cw, ch
     else:
-        scale = MAX_EDGE / max(sw, sh)
-        w, h = max(1, round(sw * scale)), max(1, round(sh * scale))
+        scale = MAX_EDGE / max(cw, ch)
+        w, h = max(1, round(cw * scale)), max(1, round(ch * scale))
 
     if kind == "hillshade":
-        small = gdal.Translate("", src, format="MEM", width=w, height=h)
+        small = gdal.Translate("", src, format="MEM", width=w, height=h, srcWin=win)
         # zFactor=1 default, bump if gentle river relief looks flat
         hs = gdal.DEMProcessing("", small, "hillshade", format="MEM")
         gdal.Translate(str(out), hs, format="PNG")  # PNG driver is CreateCopy-only
@@ -54,7 +79,7 @@ def render_thumbnail(item, src_path, kind: str) -> str:
         # RGBA when the source carries an alpha band, keeps nodata edges transparent
         bands = [1, 2, 3, 4] if has_alpha else ([1, 2, 3] if nbands >= 3 else [1])
         gdal.Translate(str(out), src, format="PNG", width=w, height=h,
-                       bandList=bands, resampleAlg="average")
+                       bandList=bands, resampleAlg="average", srcWin=win)
 
     return out.resolve().as_posix()
 
@@ -121,6 +146,10 @@ if __name__ == "__main__":
     else:
         ds = gdal.Open(str(src))
         kind = "rgb" if ds.RasterCount >= 3 else "hillshade"
+        sw, sh = ds.RasterXSize, ds.RasterYSize
+        xoff, yoff, xs, ys = _data_window(ds.GetRasterBand(1), sw, sh)
+        assert 0 <= xoff and 0 <= yoff and xs > 0 and ys > 0 \
+            and xoff + xs <= sw and yoff + ys <= sh, (xoff, yoff, xs, ys, sw, sh)
         ds = None
     item = SimpleNamespace(id=src.stem.removesuffix(".copc"),
                            get_self_href=lambda: str(dst / "item.json"))

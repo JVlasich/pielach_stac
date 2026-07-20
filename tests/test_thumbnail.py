@@ -64,6 +64,32 @@ def test_no_upscale(tmp_path):
     assert (w, h) == (8, 8)               # already under MAX_EDGE, kept native
 
 
+def _masked_tif(path, w, h, vx0, vx1, vy0, vy1):
+    """Float32 raster: nodata everywhere except the valid window [vx0:vx1, vy0:vy1)."""
+    import numpy as np
+    nd = -9999.0
+    ds = gdal.GetDriverByName("GTiff").Create(str(path), w, h, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((0, 1, 0, 0, 0, -1))
+    b = ds.GetRasterBand(1)
+    b.SetNoDataValue(nd)
+    arr = np.full((h, w), nd, dtype="float32")
+    arr[vy0:vy1, vx0:vx1] = 42.0
+    b.WriteArray(arr)
+    ds = None
+
+
+def test_hillshade_cropped_to_data(tmp_path):
+    # valid data fills a 400-wide, full-height window in an 800x800 grid (nodata margins)
+    _masked_tif(tmp_path / "dtm.tif", 800, 800, 200, 600, 0, 800)
+    item = _Item(tmp_path / "item" / "item.json", "dtm")
+    href = render_thumbnail(item, tmp_path / "dtm.tif", "hillshade")
+
+    _, w, h = _open(href)
+    assert max(w, h) == MAX_EDGE
+    # cropped to the 400x800 data window (aspect ~0.5), not the 800x800 grid (aspect 1.0)
+    assert abs(w / h - 0.5) < 0.03
+
+
 def _las(path, n=800):
     import laspy
     import numpy as np
