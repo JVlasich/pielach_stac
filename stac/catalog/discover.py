@@ -10,6 +10,7 @@ import logging
 import re
 import sys
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 
 from osgeo import gdal
@@ -246,7 +247,8 @@ _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def discover(folder: str | Path, policy_unknown: str = "warn", stem_patterns=None, labels=None,
-             policy_non_cn: str = "warn", id_prefix: str | None = None) -> list:
+             policy_non_cn: str = "warn", id_prefix: str | None = None,
+             exclude: list[str] | None = None) -> list:
     """Discover Products under a campaign folder. Walks a folder, applies policies,
     assigns .group (for pcl-tiles). Pass merge_overrides() output to apply per-campaign overrides.
 
@@ -257,6 +259,7 @@ def discover(folder: str | Path, policy_unknown: str = "warn", stem_patterns=Non
         - stem_patterns ; which stem-patterns to look for
         - labels ; the labels the stem-patterns point to
         - id_prefix ; fallback for files without ISO token, guarantees unique ID
+        - exclude ; sidecar globs matched (case-insensitive) against each file's name; matches dropped
     Returns:
         - List of Products
     """
@@ -267,6 +270,15 @@ def discover(folder: str | Path, policy_unknown: str = "warn", stem_patterns=Non
     sidecars = [f for f in files if _sidecar_ext(f.name)]
     # campaign.yaml is the per-campaign sidecar, never an asset
     candidates = [f for f in files if not _sidecar_ext(f.name) and f.name.lower() != "campaign.yaml"]
+
+    if exclude:
+        kept = []
+        for f in candidates:
+            if any(fnmatch(f.name.lower(), p.lower()) for p in exclude):
+                log.warning(f"excluded by sidecar: {f.name}")
+            else:
+                kept.append(f)
+        candidates = kept
 
     matches = []
     for f in candidates:

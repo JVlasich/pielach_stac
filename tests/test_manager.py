@@ -76,6 +76,74 @@ def test_subcollection_id_not_doubled_and_asset_href_modes(tmp_path, write_tif):
             == "./pielach_2024-10-09_dsm_etrs89_thumbnail.png")
 
 
+def test_tiny_pcl_tiles_dropped(tmp_path, monkeypatch):
+    # pcl reads need opals/laspy; mock discover/build_item/pcl_point_count to exercise the filter
+    from datetime import datetime, timezone
+
+    import stac.catalog.manager as mgr
+    from stac.catalog.discover import Asset, Product
+
+    camp = tmp_path / "2024-10-09"
+    (camp / "tiles").mkdir(parents=True)
+    (camp / "campaign.yaml").write_text(
+        "collection:\n"
+        "  providers:\n"
+        "    - name: TU Wien\n"
+        "      roles: [processor]\n"
+        "  keywords: [LiDAR, Pielach]\n", encoding="utf-8")
+
+    def _prod(pid):
+        a = Asset(path=camp / "tiles" / f"{pid}.copc.laz", label="pointcloud_copc",
+                  category="pointcloud", kind="pcl", stac_roles=["data"],
+                  media_type="application/vnd.laszip+copc", extensions=[], cloud_native=True)
+        return Product(id=pid, category="pointcloud", kind="pcl", assets=[a], group="tiles")
+
+    monkeypatch.setattr(mgr, "discover",
+                        lambda folder, **kw: [_prod("pielach_2024-10-09_big"),
+                                              _prod("pielach_2024-10-09_tiny")])
+    # header point count drives the drop, read before build (tile files aren't real here)
+    monkeypatch.setattr(mgr, "pcl_point_count",
+                        lambda path: 5_000_000 if "big" in str(path) else 3)
+
+    def _fake_item(product, campaign, **kw):
+        return pystac.Item(id=product.id, geometry={"type": "Point", "coordinates": [15.4, 48.2]},
+                           bbox=[15.4, 48.2, 15.4, 48.2],
+                           datetime=datetime(2024, 10, 9, tzinfo=timezone.utc), properties={})
+
+    monkeypatch.setattr(mgr, "build_item", _fake_item)
+
+    root = pystac.Catalog(id="pielach", description="d")
+    mgr.process_campaign(camp, root, min_points=1000)
+    camp_coll = root.get_child("pielach_2024-10-09")
+    ids = {i.id for i in camp_coll.get_items(recursive=True)}
+    assert ids == {"pielach_2024-10-09_big"}, ids  # 3-point tile dropped, real tile kept
+
+    # P2-1: the tiles subcollection inherits the campaign's providers/keywords
+    sub = camp_coll.get_child("tiles")
+    assert sub.providers and sub.providers[0].name == "TU Wien"
+    assert "LiDAR" in (sub.keywords or [])
+
+
+def test_root_promoted_to_collection(tmp_path, write_tif, monkeypatch):
+    from stac.core import config
+    orig = config.section
+    base = orig("catalog")
+    monkeypatch.setattr(config, "section", lambda ns: (
+        {**base, "license": "CC-BY-4.0", "providers": [{"name": "TU Wien"}]}
+        if ns == "catalog" else orig(ns)))
+    out = tmp_path / "catalog"
+    camp = tmp_path / "2024-10-09"
+    camp.mkdir()
+    write_tif(camp / "pielach_2024-10-09_dsm_etrs89.tif", 10)
+    (camp / "campaign.yaml").write_text("", encoding="utf-8")
+
+    update_catalog(tmp_path, out)
+    root = pystac.read_file(str(out / "catalog.json"))
+    assert isinstance(root, pystac.Collection)
+    assert root.license == "CC-BY-4.0" and root.providers
+    assert root.extent.spatial.bboxes[0] and root.extent.temporal.intervals[0]
+
+
 def test_update_catalog_staged_idempotency(tmp_path, write_tif):
     """One sequential story: build -> reuse -> content change -> stale ->
     dry-run -> force -> subcollection stale -> duplicate id -> vanished campaign."""
@@ -125,7 +193,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif):
     assert s["gsd"] == {"minimum": 25, "maximum": 25}
 
     # run report persisted
-    report = json.loads((out / "last_run.json").read_text(encoding="utf-8"))
+    report = json.loads((Path.cwd() / "last_run.json").read_text(encoding="utf-8"))
     assert report["ok"]["2023-02-08_test"]["rebuilt"] == 5 and report["failed"]
 
     # run 2: no-op, everything reused, timestamps untouched
@@ -166,7 +234,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif):
     res = update_catalog(tmp_path, out, dry_run=True)
     assert res["ok"]["2023-02-08_test"]["rebuilt"] == 1
     assert (out / "catalog.json").stat().st_mtime == before
-    report = json.loads((out / "last_run.json").read_text(encoding="utf-8"))
+    report = json.loads((Path.cwd() / "last_run.json").read_text(encoding="utf-8"))
     assert report["dry_run"] is True
 
     # force skips the gate, everything rebuilds

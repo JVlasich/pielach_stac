@@ -79,15 +79,23 @@ def test_build_item_and_collection(tmp_path, write_tif):
         build_collection("empty", {}, [])
 
 
-def test_build_item_filename_token_fallback(tmp_path, write_tif, caplog):
-    # deviating filename token beats the campaign date and warns
-    dev = tmp_path / "dev"
-    dev.mkdir()
-    write_tif(dev / "pielach_2014-10-16_dtm_etrs89.tif", 10)
+def test_build_item_filename_token_rules(tmp_path, write_tif, caplog):
+    # token far from the campaign (>2wk): falls back to the campaign date, nudges the namer
+    far = tmp_path / "far"
+    far.mkdir()
+    write_tif(far / "pielach_2014-10-16_dtm_etrs89.tif", 10)
     with caplog.at_level(logging.WARNING):
-        item = build_item(discover(dev)[0], CAMP)
-    assert item.datetime == datetime(2014, 10, 16, tzinfo=timezone.utc)
-    assert any("deviates from campaign date" in r.getMessage() for r in caplog.records)
+        item = build_item(discover(far)[0], CAMP)
+    assert item.datetime == datetime.combine(CAMP, datetime.min.time(), tzinfo=timezone.utc)
+    assert any("acquisition date" in r.getMessage() for r in caplog.records)
+
+    # token within 2wk of the campaign: honored as-is
+    near_camp = date(2023, 2, 8)
+    near = tmp_path / "near"
+    near.mkdir()
+    write_tif(near / "pielach_2023-02-10_dtm_etrs89.tif", 10)  # 2 days off
+    item = build_item(discover(near)[0], near_camp)
+    assert item.datetime == datetime(2023, 2, 10, tzinfo=timezone.utc)
 
     # no token: campaign date fallback
     plain = tmp_path / "plain"
@@ -112,17 +120,28 @@ def test_build_item_coords_rounded(tmp_path, write_tif):
     assert coords and all(v == round(v, 7) for v in coords)
 
 
-def test_pc_datetime_end_outlier_warns_not_clamped(caplog):
-    # start on-campaign, a stray max GPS time ~5 months later (the 2024->2025 poisoning)
+def test_pc_datetime_end_outlier_rejected(caplog):
+    # start on-campaign, a stray max GPS time ~5 months later (the 2024->2025 poisoning):
+    # >2wk from campaign -> the whole interval is rejected (item falls back to campaign date)
     camp = date(2024, 10, 9)
     good = datetime(2024, 10, 9, 8, tzinfo=timezone.utc)
     stray = datetime(2025, 3, 12, 8, tzinfo=timezone.utc)
     with caplog.at_level(logging.WARNING):
-        start, end = resolve_pc_datetime(_adjusted_gps(good), _adjusted_gps(stray), camp)
-    assert start == good and end.date() == date(2025, 3, 12), "reported as-is, not clamped"
+        span = resolve_pc_datetime(_adjusted_gps(good), _adjusted_gps(stray), camp)
+    assert span is None, "gross outlier edge rejected, not reported"
+    assert any("end" in m and "rejected" in m for m in (r.getMessage() for r in caplog.records))
+
+
+def test_pc_datetime_within_two_weeks_kept(caplog):
+    # legit few-day drift (2015/2017 flew days off the folder date) stays honest, no reject
+    camp = date(2024, 10, 9)
+    start_dt = datetime(2024, 10, 9, 8, tzinfo=timezone.utc)
+    end_dt = datetime(2024, 10, 19, 8, tzinfo=timezone.utc)  # 10 days: >7d warns, but <2wk kept
+    with caplog.at_level(logging.WARNING):
+        span = resolve_pc_datetime(_adjusted_gps(start_dt), _adjusted_gps(end_dt), camp)
+    assert span is not None and span[1].date() == date(2024, 10, 19), "within 2wk kept as-is"
     msgs = [r.getMessage() for r in caplog.records]
-    assert any("end" in m and "deviates" in m for m in msgs), msgs
-    assert not any("start" in m and "deviates" in m for m in msgs), "start is on-campaign"
+    assert any("deviates >7d" in m for m in msgs) and not any("rejected" in m for m in msgs)
 
 
 def test_build_collection_license_link(tmp_path, write_tif):
@@ -148,3 +167,22 @@ def test_build_item_provenance(tmp_path, write_tif):
     assert item.common_metadata.updated > fixed
     assert item.properties["platform"] == "riegl-test"
     assert item.properties["gsd"] == 99, "sidecar properties win over derived"
+
+
+def test_collection_declares_summary_extensions(tmp_path, write_tif):
+    from pystac.extensions.projection import ProjectionExtension
+    write_tif(tmp_path / "pielach_2023-02-08_dtm_etrs89.tif", 10)
+    items = [build_item(p, CAMP) for p in discover(tmp_path)]
+    coll = build_collection("c", {"title": "t"}, items)
+    # proj:code appears in the summaries -> the projection extension must be declared
+    assert ProjectionExtension.get_schema_uri() in coll.stac_extensions, coll.stac_extensions
+
+
+def test_item_gets_title(tmp_path, write_tif):
+    write_tif(tmp_path / "pielach_2023-02-08_dsm_etrs89.tif", 10)
+    item = build_item(discover(tmp_path)[0], CAMP)
+    assert item.properties["title"] == "dsm 2023-02-08"
+    # sidecar byId title overrides the derived default
+    item2 = build_item(discover(tmp_path)[0], CAMP,
+                       properties={"byId": {"pielach_2023-02-08_dsm_etrs89": {"title": "Custom"}}})
+    assert item2.properties["title"] == "Custom"

@@ -13,7 +13,7 @@ from ..core import config
 from ..core.registry import merge_overrides
 from .build import build_collection, build_item, campaign_date
 from .discover import discover
-from .extract import file_meta
+from .extract import file_meta, pcl_point_count
 from .hierarchy import resolve_hierarchy
 from .thumbnail import pcl_thumbnails_available, render_thumbnail
 
@@ -35,9 +35,14 @@ CATALOG_DEFAULTS = {
     "only": None,            # glob over campaign dir names; skips the stale-collection sweep
     "idCollisions": "warn",  # warn | raise for duplicate item/subcollection ids across campaigns
     "assetHrefs": "absolute",# relative (self-contained) | absolute (keep build-time paths)
+    "minPoints": 1000,       # drop point-cloud items below this pc:count (degenerate tiles)
     "nbThreads": None,       # opals thread count, None = opals default (all CPUs)
     "exactComputation": True,# exact point statistics (full scan) vs header-only (fast, no stats)
     "thumbnails": True,      # render PNG thumbnails for raster items (ortho/DSM/DTM)
+    # root metadata: with both license and providers set, the root is promoted to a Collection
+    "license": None,         # root license (SPDX id or "other")
+    "providers": None,       # root providers (STAC list or name-keyed mapping)
+    "licenseLink": None,     # root rel=license link
 }
 config.register_defaults("catalog", CATALOG_DEFAULTS)
 
@@ -110,6 +115,7 @@ def process_campaign(
     policy_stale:   str = "warn",
     policy_ids:     str = "warn",
     seen_ids: dict | None = None,
+    min_points: int = 1000,
     thumbnails: bool = True,
     thumb_jobs: list | None = None
 ) -> dict:
@@ -145,7 +151,7 @@ def process_campaign(
     _register_id(seen_ids, camp_id, "collection", folder.name, policy_ids)
 
     products = discover(folder, policy_unknown=policy_unknown, stem_patterns=sp, labels=lb,
-                        policy_non_cn=policy_non_cn, id_prefix=camp_id)
+                        policy_non_cn=policy_non_cn, id_prefix=camp_id, exclude=sc.get("exclude"))
 
     if not products:
         log.warning(f"no products in {folder.name}, campaign {camp_id} untouched")
@@ -172,6 +178,28 @@ def process_campaign(
     for iid in (props.get("byId") or {}):
         if iid not in item_ids:
             log.warning(f"properties.byId matches no item id: {iid}")
+
+    # Drop pcl tiles with VERY few points (configurable) use laspy header read.
+    # previously cataloged is removed not kept stale
+    if min_points:
+        kept = []
+        for p in products:
+            if p.kind == "pcl":
+                try:
+                    n = pcl_point_count(p.assets[0].path)
+                except Exception as e:
+                    log.warning(f"point-count read failed, tile kept: {p.id} ({e})")
+                    kept.append(p)
+                    continue
+                if n < min_points:
+                    log.warning(f"tiny tile dropped ({n} pts < {min_points}): {p.id}")
+                    existing.pop(p.id, None)
+                    continue
+            kept.append(p)
+        products = kept
+        if not products:
+            log.warning(f"all products below minPoints in {folder.name}, campaign {camp_id} untouched")
+            return {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 0}
 
     rebuilt = reused = 0
     failed_items = []
@@ -237,8 +265,11 @@ def process_campaign(
         sub_id = node.name
         _register_id(seen_ids, sub_id, "subcollection", folder.name, policy_ids)
         cat = node.products[0].category
+        camp_meta = sc.get("collection") or {}  # tiles inherit the campaign's attribution
         meta = {"title": node.title or f"{cat} tiles",
-                "description": node.description or f"Tiled {cat} for campaign {camp_id}."}
+                "description": node.description or f"Tiled {cat} for campaign {camp_id}.",
+                "providers": camp_meta.get("providers"),
+                "keywords": camp_meta.get("keywords")}
         items = [p.item for p in node.products] + stale_clones.pop(sub_id, [])
         children.append(build_collection(sub_id, meta, items))
 
@@ -260,18 +291,69 @@ def process_campaign(
 
 # --- catalog loop ---
 
+def _root_providers(cfg) -> list:
+    provs = cfg["providers"] or []
+    if isinstance(provs, dict):  # name-as-key convenience form (mirrors build_collection)
+        provs = [{"name": name, **(spec or {})} for name, spec in provs.items()]
+    return [pystac.Provider.from_dict(p) for p in provs]
+
+
+def _union_extent(children) -> pystac.Extent:
+    """Aggregate spatial bbox + temporal interval over the child collections."""
+    bboxes = [c.extent.spatial.bboxes[0] for c in children if c.extent.spatial.bboxes]
+    if bboxes:
+        sp = pystac.SpatialExtent([[min(b[0] for b in bboxes), min(b[1] for b in bboxes),
+                                    max(b[2] for b in bboxes), max(b[3] for b in bboxes)]])
+    else:
+        sp = pystac.SpatialExtent([[-180, -90, 180, 90]])
+    intervals = [c.extent.temporal.intervals[0] for c in children if c.extent.temporal.intervals]
+    starts = [i[0] for i in intervals if i and i[0]]
+    ends = [i[1] for i in intervals if i and i[1]]
+    tp = pystac.TemporalExtent([[min(starts) if starts else None, max(ends) if ends else None]])
+    return pystac.Extent(sp, tp)
+
+
 def _load_or_create_root(out_dir: Path) -> pystac.Catalog:
+    """Load or create the root. With both license and providers configured the root is a
+    Collection (union extent set after the campaign loop); otherwise a bare Catalog. A change
+    of root type across runs migrates the existing children over."""
     cat_json = out_dir / "catalog.json"
     cfg = config.section("catalog")
+    promote = bool(cfg["license"] and cfg["providers"])
+
+    existing = None
     if cat_json.exists():
-        root = pystac.Catalog.from_file(str(cat_json))
-        root.make_all_asset_hrefs_absolute()  # asset hrefs survive re-normalization
-        # title/description follow the config on every run; id stays (id change = new catalog)
-        root.title, root.description = cfg["title"], cfg["description"]
-        log.debug(f"loaded existing catalog: {cat_json}")
-        return root
-    log.info(f"creating new catalog {cfg['id']!r} in {out_dir}")
-    return pystac.Catalog(id=cfg["id"], title=cfg["title"], description=cfg["description"])
+        existing = pystac.read_file(str(cat_json))
+        existing.make_all_asset_hrefs_absolute()  # asset hrefs survive re-normalization
+
+    # Collection is a Catalog subclass, so match on the promote flag directly
+    reuse = existing is not None and (promote == isinstance(existing, pystac.Collection))
+    if reuse:
+        root = existing
+    else:
+        if promote:
+            placeholder = pystac.Extent(pystac.SpatialExtent([[-180, -90, 180, 90]]),
+                                        pystac.TemporalExtent([[None, None]]))
+            root = pystac.Collection(id=cfg["id"], title=cfg["title"], description=cfg["description"],
+                                     extent=placeholder, license=cfg["license"] or "other")
+        else:
+            root = pystac.Catalog(id=cfg["id"], title=cfg["title"], description=cfg["description"])
+        if existing is not None:
+            log.info(f"root type -> {'Collection' if promote else 'Catalog'}, migrating children")
+            for c in list(existing.get_children()):
+                root.add_child(c)
+        else:
+            log.info(f"creating new {'collection' if promote else 'catalog'} {cfg['id']!r} in {out_dir}")
+
+    # title/description follow the config on every run; id stays (id change = new catalog)
+    root.title, root.description = cfg["title"], cfg["description"]
+    if promote:
+        root.license = cfg["license"]
+        root.providers = _root_providers(cfg)
+        root.remove_links("license")  # rebuild the license link idempotently
+        if cfg["licenseLink"]:
+            root.add_link(pystac.Link(rel="license", target=cfg["licenseLink"], title=cfg["license"]))
+    return root
 
 
 class _WarnCollector(logging.Handler):
@@ -293,6 +375,7 @@ def update_catalog(
     validate:   bool = False,
     only: str | None = None,
     asset_hrefs: str = "absolute",
+    min_points: int = 1000,
     policy_stale:   str = "warn",
     policy_unknown: str = "warn",
     policy_non_cn:  str = "warn",
@@ -327,7 +410,7 @@ def update_catalog(
         {"ok": {campaign: counts}, "failed": {campaign: error},
         "stale_collections": [ids], "validation": None | "ok" | error};
 
-        and written to <out>/last_run.json."""
+        and written to ./last_run.json (working directory)."""
     root, out_dir = Path(root), Path(out_dir)
     cat = _load_or_create_root(out_dir)
 
@@ -355,7 +438,7 @@ def update_catalog(
                 ok[d.name] = process_campaign(
                     d, cat, policy_stale=policy_stale, dry_run=dry_run, force=force,
                     policy_unknown=policy_unknown, policy_non_cn=policy_non_cn,
-                    policy_ids=policy_ids, seen_ids=seen_ids,
+                    policy_ids=policy_ids, seen_ids=seen_ids, min_points=min_points,
                     thumbnails=thumbnails, thumb_jobs=thumb_jobs)
             except Exception as e:
                 log.exception(f"FAILED: {d.name}")
@@ -382,8 +465,13 @@ def update_catalog(
             else:
                 log.warning(f"collection kept, campaign dir gone: {cid}")
 
+        if isinstance(cat, pystac.Collection):  # promoted root: aggregate extent over campaigns
+            cat.extent = _union_extent(list(cat.get_children()))
+
         if not dry_run:
             cat.normalize_hrefs(str(out_dir))
+            if isinstance(cat, pystac.Collection):
+                cat.set_self_href(str(out_dir / "catalog.json"))  # stable root entry point (not collection.json)
             if thumbnails:
                 # thumb creation for pcl -> make sure laspy can load
                 pcl_ok = pcl_thumbnails_available()
@@ -419,16 +507,17 @@ def update_catalog(
                "validation": validation, "warnings": warns.msgs}
         if fatal:
             res["fatal"] = fatal
-        _write_report(out_dir, res, dry_run=dry_run, force=force, only=only, stale=policy_stale)
+        _write_report(res, dry_run=dry_run, force=force, only=only, stale=policy_stale)
     return res
 
 
-def _write_report(out_dir: Path, res: dict, **knobs) -> None:
-    """Machine-readable run report, overwritten each run (dry runs included)."""
+def _write_report(res: dict, **knobs) -> None:
+    """Machine-readable run report in the working directory, overwritten each run
+    (dry runs included). Out of the catalog tree so crawlers ignore the non-STAC file."""
     report = {"timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"), **knobs, **res}
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "last_run.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    log.debug(f"run report written: {out_dir / 'last_run.json'}")
+    path = Path.cwd() / "last_run.json"
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    log.debug(f"run report written: {path}")
 
 
 def _validate_catalog(root) -> str:

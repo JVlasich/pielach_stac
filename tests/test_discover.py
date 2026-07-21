@@ -139,3 +139,12 @@ def test_skip_policy_is_old_cloud_native_only_rule(discovered):
     skipped = discover(tmp, policy_unknown="skip", policy_non_cn="skip")
     assert len(skipped) == 7
     assert all(a.cloud_native for p in skipped for a in p.assets)
+
+
+def test_exclude_glob_drops_named_file(tmp_path):
+    (tmp_path / "pielach_2023-02-08_524000_534000.copc.laz").touch()  # tile, kept
+    (tmp_path / "pielach_2023-02-08.laz").touch()                     # mono full cloud, excluded
+    # uppercase pattern still matches (case-insensitive vs the file name)
+    ids = {p.id for p in discover(tmp_path, exclude=["PIELACH_2023-02-08.LAZ"])}
+    assert "pielach_2023-02-08" not in ids
+    assert "pielach_2023-02-08_524000_534000" in ids

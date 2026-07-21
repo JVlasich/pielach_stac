@@ -35,3 +35,8 @@ properties:
 # patterns:
 #   pointcloud:
 #     extensions: [.laz, .las]
+
+# Drop specific files from the catalog. Globs matched case-insensitively against file names.
+# exclude:
+#   - pielach_2021-03-09.laz     # e.g. a redundant monolithic point cloud
+#   - "*_draft.tif"

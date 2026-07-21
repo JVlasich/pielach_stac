@@ -28,6 +28,10 @@ log = logging.getLogger(__name__)
 # set by cli after config merge; nbThreads None = opals default (all CPUs)
 OPALS_INFO = {"nbThreads": None, "exactComputation": True}
 
+# mask-footprint parts/holes below (this * effective-pixel)^2 are noise, dropped.
+# higher values collapse the whole corridor to the bbox rectangle.
+_MIN_PART_PX = 10
+
 
 @dataclass
 class AssetMeta:
@@ -208,10 +212,9 @@ def _mask_footprint(ds, gt, srs, w: int, h: int) -> tuple[dict, list] | None:
         return None
     geom = geom.UnionCascaded()
 
-    # speck polygons are mask noise; stair vertices are decimation artifacts.
-    # 3-pixel tolerance keeps the corridor shape and the item JSON small.
+    # filter footprint parts
     px = abs(gt[1]) * sx
-    min_area = (3 * px) ** 2
+    min_area = (_MIN_PART_PX * px) ** 2
     parts = ([geom] if geom.GetGeometryName() == "POLYGON"
              else [geom.GetGeometryRef(i) for i in range(geom.GetGeometryCount())])
     keep = ogr.Geometry(ogr.wkbMultiPolygon)
@@ -452,6 +455,15 @@ def file_meta(p: Path | str) -> FileMeta:
         raise e
 
     return FileMeta(size=size, mtime=mtime, sha256=hash)
+
+
+def pcl_point_count(p: Path | str) -> int:
+    """Point count from the LAS public header, uncompressed in .las/.laz/.copc.laz
+    alike (no point decompression, ~7 ms). Lets the minPoints filter drop degenerate
+    tiles before the expensive opals build."""
+    import laspy
+    with laspy.open(str(p)) as r:
+        return r.header.point_count
 
 
 # kind → fn(path, needed_exts) -> AssetMeta (I/O once, gated)

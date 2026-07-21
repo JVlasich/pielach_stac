@@ -19,6 +19,7 @@ catalog/
 **/*.odm
 **/.pytest_cache
 **/*.png
+last_run.json
 
 *CLAUDE.md
 *.yaml

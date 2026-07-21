@@ -37,7 +37,7 @@ def test_crs_fallback(tmp_path, write_tif, write_tif_no_crs):
 
 
 def test_mask_footprint_shrinks_geometry(tmp_path, write_tif, write_masked_tif):
-    write_tif(tmp_path / "full.tif", 10, 16)
+    write_tif(tmp_path / "full.tif", 10, 64)
     write_masked_tif(tmp_path / "masked.tif")
     full = raster(tmp_path / "full.tif")
     masked = raster(tmp_path / "masked.tif")

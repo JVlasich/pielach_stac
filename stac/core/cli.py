@@ -53,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     cat.add_argument("--assetHrefs", type=str, choices=["relative", "absolute"], default=None,
                      help="Asset href style: relative (self-contained) or absolute (keep build-time paths); "
                           "thumbnails are always relative (default: absolute)")
+    cat.add_argument("--minPoints", type=int, default=None,
+                     help="Drop point-cloud items below this pc:count, degenerate tiles (default: 1000)")
     cat.add_argument("--thumbnails", action=argparse.BooleanOptionalAction, default=None,
                      help="Render PNG thumbnails for raster items according to registry (default: on)")
 
@@ -121,7 +123,8 @@ def main():
         root, out, policy_stale=cfg["stale"], dry_run=cfg["dryRun"], force=cfg["force"],
         validate=cfg["validate"], policy_unknown=cfg["unknownAssets"],
         policy_non_cn=cfg["nonCloudNative"], policy_ids=cfg["idCollisions"],
-        only=cfg["only"], asset_hrefs=cfg["assetHrefs"], thumbnails=cfg["thumbnails"])
+        only=cfg["only"], asset_hrefs=cfg["assetHrefs"],
+        min_points=cfg["minPoints"], thumbnails=cfg["thumbnails"])
     ok, failed = res["ok"], res["failed"]
 
     # Summary

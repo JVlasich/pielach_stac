@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 _GPS_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
 _WEEK = 604800  # seconds
+_MAX_DEVIATION_DAYS = 14  # a derived datetime (gps or filename) beyond this from the campaign is rejected
 
 
 def campaign_date(name: str) -> date:
@@ -52,9 +53,14 @@ def resolve_pc_datetime(gps_min, gps_max, campaign: date) -> tuple[datetime, dat
                       - timedelta(days=(campaign.weekday() + 1) % 7))
         start = week_start + timedelta(seconds=gps_min)
         end = week_start + timedelta(seconds=gps_max)
-    # a stray min OR max poisons the extent; warn on either
+    # a stray min OR max poisons the extent; warn on drift, reject gross outliers
     for edge, dt in (("start", start), ("end", end)):
-        if abs((dt.date() - campaign).days) > 7:
+        dev = abs((dt.date() - campaign).days)
+        if dev > _MAX_DEVIATION_DAYS:
+            log.warning(f"gps {edge} {dt.date()} >2wk from campaign date {campaign}, rejected "
+                        f"(item falls back to campaign date)")
+            return None
+        if dev > 7:
             log.warning(f"gps {edge} {dt.date()} deviates >7d from campaign date {campaign}")
     return start, end
 
@@ -184,6 +190,16 @@ def _round_coords(v):
     return [_round_coords(c) for c in v]
 
 
+def _item_title(product, campaign: date) -> str:
+    """Short human title for browse UIs. Tile coords when tiled, else category + date.
+    Sidecar properties (byId title) override this."""
+    if product.group:  # tiled: id tail carries the tile coords (…_easting_northing)
+        tail = product.id.split("_")[-2:]
+        if len(tail) == 2 and all(t.isdigit() for t in tail):
+            return f"{product.category} tile {tail[0]}_{tail[1]}"
+    return f"{product.category} {campaign.isoformat()}"
+
+
 def build_item(product, campaign: date, *, created: datetime | None = None,
                properties: dict | None = None, crs: str | None = None) -> pystac.Item:
     """Produces and populates a Stac item from a discover::Product
@@ -206,10 +222,15 @@ def build_item(product, campaign: date, *, created: datetime | None = None,
     if span:
         start = span[0]
     else:
-        # no GPS time: filename ISO token beats the campaign date (file carries its true date)
+        # no GPS time: filename ISO token is honored, unless it drifts too far from the campaign
         try:
             token = campaign_date(product.assets[0].path.name)
-            if token != campaign:
+            if abs((token - campaign).days) > _MAX_DEVIATION_DAYS:
+                log.warning(f"filename date {token} >2wk from campaign date {campaign}, using campaign "
+                            f"date (filename should encode image acquisition date, not processing "
+                            f"time): {product.id}")
+                token = campaign
+            elif token != campaign:
                 log.warning(f"filename date {token} deviates from campaign date {campaign}: {product.id}")
         except ValueError:
             token = campaign
@@ -231,6 +252,7 @@ def build_item(product, campaign: date, *, created: datetime | None = None,
     if span:
         item.common_metadata.start_datetime = span[0]
         item.common_metadata.end_datetime = span[1]
+    item.properties["title"] = _item_title(product, campaign)  # sidecar byId title overrides below
 
     for a, meta, fm in extracted:
         pa = pystac.Asset(
@@ -273,6 +295,22 @@ def build_item(product, campaign: date, *, created: datetime | None = None,
 # created/updated (run noise), wkt2 (bloat) and datetime (extent) stay out.
 _SUMMARY_SETS = ("proj:code", "platform", "instruments", "pc:encoding")
 _SUMMARY_RANGES = ("gsd", "pc:count", "pc:density")
+
+# a collection summarizing extension fields must declare those extensions; gsd/platform/
+# instruments are common metadata (no extension), so only proj/pc appear here
+_SUMMARY_EXT_URI = {
+    "proj:": ProjectionExtension.get_schema_uri(),
+    "pc:": PointcloudExtension.get_schema_uri(),
+}
+
+
+def _declare_summary_extensions(coll: Collection) -> None:
+    """Add the extension URL of every prefixed field present in the collection's summaries."""
+    s = coll.summaries
+    keys = set(s.lists) | set(s.ranges) | set(s.other) | set(s.schemas)
+    for prefix, uri in _SUMMARY_EXT_URI.items():
+        if any(k.startswith(prefix) for k in keys) and uri not in coll.stac_extensions:
+            coll.stac_extensions.append(uri)
 
 
 def _summarize(items) -> Summaries | None:
@@ -325,6 +363,7 @@ def build_collection(cid: str, meta: dict, items: list, children: Sequence = ())
         keywords=meta.get("keywords"),
         summaries=_summarize(all_items),
     )
+    _declare_summary_extensions(coll)
     lic_link = meta.get("license_link")
     if lic_link:
         coll.add_link(pystac.Link(rel="license", target=lic_link, title=meta.get("license")))

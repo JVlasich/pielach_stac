@@ -16,9 +16,13 @@ catalog:
   # only: null
   # idCollisions: warn
   # assetHrefs: absolute
+  # minPoints: 1000
   # nbThreads: null
   # exactComputation: true
   # thumbnails: true
+  # license: null            # with providers set, promotes the root to a Collection
+  # providers: null          # STAC list, or a name-keyed mapping
+  # licenseLink: null        # root rel=license link
 
 tile_and_convert_pcl:
   # infile: null
