@@ -206,10 +206,10 @@ def merge_overrides(patterns, labels):
     """Per-campaign overrides onto the defaults.
     Returns merged (stem_patterns, labels) copies
     the module globals are not mutated."""
-    sp = dict(STEM_PATTERNS)
+    sp = {k: dict(v) for k, v in STEM_PATTERNS.items()}
     sp.update(patterns or {})
 
-    lb = dict(LABELS)
+    lb = {k: dict(v) for k, v in LABELS.items()}
     lb.update(labels or {})
 
     _validate(sp, lb)

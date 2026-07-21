@@ -45,7 +45,10 @@ config.register_defaults("catalog", CATALOG_DEFAULTS)
 def load_sidecar(path) -> dict:
     """Read a per-campaign sidecar YAML into a dict
     (collection / patterns / labels / hierarchy / properties blocks / crs fallback)."""
-    return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise TypeError(f"{path}: campaign sidecar must be a YAML mapping, not {type(data).__name__}")
+    return data
 
 
 def _register_id(seen: dict | None, new_id: str, kind: str, source: str, policy: str) -> None:
@@ -82,7 +85,9 @@ def _stored_file_fields(item, label: str):
 def _needs_rebuild(product, existing_item) -> bool:
     """Size shortcut, then sha256 confirm. A computed hash rides on the asset so
     build_item never hashes twice.
-    Note: gates the first asset only, products are single-asset today."""
+    Note: gates the first asset only, products are single-asset today. The gate hashes
+    only the data asset, so a hand-deleted co-located thumbnail or sidecar leaves a
+    dangling href until the next --force run."""
     a = product.assets[0]
     stored = _stored_file_fields(existing_item, a.label)
     if stored is None:
@@ -326,11 +331,11 @@ def update_catalog(
     root, out_dir = Path(root), Path(out_dir)
     cat = _load_or_create_root(out_dir)
 
+    ok, failed, stale_colls, validation, fatal = {}, {}, [], None, None
     warns = _WarnCollector()
     root_logger = logging.getLogger()
     root_logger.addHandler(warns)
     try:
-        ok, failed = {}, {}
         seen_ids: dict = {cat.id: ("catalog", "root")}
         # (item, src_path, kind) for rebuilt raster items, rendered after normalize
         thumb_jobs: list = []
@@ -377,7 +382,6 @@ def update_catalog(
             else:
                 log.warning(f"collection kept, campaign dir gone: {cid}")
 
-        validation = None
         if not dry_run:
             cat.normalize_hrefs(str(out_dir))
             if thumbnails:
@@ -406,12 +410,16 @@ def update_catalog(
             log.info(f"catalog saved: {out_dir}")
             if validate:
                 validation = _validate_catalog(cat)
+    except Exception as e:
+        fatal = f"{type(e).__name__}: {e}"
+        raise
     finally:
         root_logger.removeHandler(warns)
-
-    res = {"ok": ok, "failed": failed, "stale_collections": stale_colls,
-           "validation": validation, "warnings": warns.msgs}
-    _write_report(out_dir, res, dry_run=dry_run, force=force, only=only, stale=policy_stale)
+        res = {"ok": ok, "failed": failed, "stale_collections": stale_colls,
+               "validation": validation, "warnings": warns.msgs}
+        if fatal:
+            res["fatal"] = fatal
+        _write_report(out_dir, res, dry_run=dry_run, force=force, only=only, stale=policy_stale)
     return res
 
 
