@@ -191,13 +191,14 @@ def _round_coords(v):
 
 
 def _item_title(product, campaign: date) -> str:
-    """Short human title for browse UIs. Tile coords when tiled, else category + date.
-    Sidecar properties (byId title) override this."""
+    """Short human title for browse UIs. Tile coords when tiled, else asset label + date.
+    The registry label distinguishes variants the coarse category collapses (dtm_filled vs
+    dtm_masked vs dtm). Sidecar properties (byId title) override this."""
     if product.group:  # tiled: id tail carries the tile coords (…_easting_northing)
         tail = product.id.split("_")[-2:]
         if len(tail) == 2 and all(t.isdigit() for t in tail):
             return f"{product.category} tile {tail[0]}_{tail[1]}"
-    return f"{product.category} {campaign.isoformat()}"
+    return f"{product.assets[0].label.replace('_', ' ')} {campaign.isoformat()}"
 
 
 def build_item(product, campaign: date, *, created: datetime | None = None,

@@ -46,21 +46,46 @@ def _data_window(band, sw: int, sh: int) -> list[int]:
     return [xoff, yoff, xsize, ysize]
 
 
+def _thumb_srs(item, file_srs):
+    """Source CRS for the warp. The raster file often carries none (CRS lives in the
+    sidecar), so the item's proj metadata is preferred; fall back to the file's own CRS.
+    None => caller skips the warp."""
+    props = getattr(item, "properties", None) or {}
+    return props.get("proj:wkt2") or props.get("proj:code") or (
+        file_srs.ExportToWkt() if file_srs is not None else None)
+
+
+def _write_png(ds, out: Path) -> None:
+    """Write ds to PNG (CreateCopy-only driver), longest edge capped at MAX_EDGE."""
+    ow, oh = ds.RasterXSize, ds.RasterYSize
+    if max(ow, oh) > MAX_EDGE:
+        s = MAX_EDGE / max(ow, oh)
+        ds = gdal.Translate("", ds, format="MEM",
+                            width=max(1, round(ow * s)), height=max(1, round(oh * s)))
+    gdal.Translate(str(out), ds, format="PNG")
+
+
 def render_thumbnail(item, src_path, kind: str) -> str:
     """Write <item_dir>/<item_id>_thumbnail.png next to the item JSON, return its abs href.
 
     kind: "rgb" (ortho band downscale) | "hillshade" (DSM/DTM height render)
-          | "pointcloud" (COPC/LAZ top-down elevation colormap)"""
+          | "pointcloud" (COPC/LAZ top-down elevation colormap)
+
+    Raster thumbnails are warped to EPSG:4326: STAC Browser overlays the PNG onto the
+    4326 bbox as plate-carrée, so native-CRS pixels would sit stretched/rotated off the
+    footprint. Source CRS comes from the item's proj metadata (the file may carry none)."""
     src = str(src_path)
     out = Path(item.get_self_href()).parent / f"{item.id}_thumbnail.png"
     out.parent.mkdir(parents=True, exist_ok=True)  # save() has not created the item dir yet
 
     if kind == "pointcloud":
+        # same native-CRS overlay misalignment applies; deferred (would reproject x/y first)
         return _render_pcl(src, out)  # GDAL cannot open point clouds, own path below
 
     ds = gdal.Open(src)
     sw, sh, nbands = ds.RasterXSize, ds.RasterYSize, ds.RasterCount
     has_alpha = nbands >= 4 and ds.GetRasterBand(4).GetColorInterpretation() == gdal.GCI_AlphaBand
+    file_srs = ds.GetSpatialRef()  # usually None; CRS lives in the item's proj metadata
     win = _data_window(ds.GetRasterBand(1), sw, sh)  # crop nodata margin so thumb matches bbox
     ds = None
     cw, ch = win[2], win[3]
@@ -73,14 +98,25 @@ def render_thumbnail(item, src_path, kind: str) -> str:
     if kind == "hillshade":
         small = gdal.Translate("", src, format="MEM", width=w, height=h, srcWin=win)
         # zFactor=1 default, bump if gentle river relief looks flat
-        hs = gdal.DEMProcessing("", small, "hillshade", format="MEM")
-        gdal.Translate(str(out), hs, format="PNG")  # PNG driver is CreateCopy-only
+        rendered = gdal.DEMProcessing("", small, "hillshade", format="MEM")  # 1-band, nodata=0
     else:
         # RGBA when the source carries an alpha band, keeps nodata edges transparent
         bands = [1, 2, 3, 4] if has_alpha else ([1, 2, 3] if nbands >= 3 else [1])
-        gdal.Translate(str(out), src, format="PNG", width=w, height=h,
-                       bandList=bands, resampleAlg="average", srcWin=win)
+        rendered = gdal.Translate("", src, format="MEM", width=w, height=h,
+                                  bandList=bands, resampleAlg="average", srcWin=win)
 
+    srs_in = _thumb_srs(item, file_srs)
+    if srs_in:
+        # warp so the browser's bbox overlay is geometrically correct; dstAlpha keeps the
+        # rotated margins transparent (skip when the source already carries its own alpha)
+        warp = {"srcSRS": srs_in, "dstSRS": "EPSG:4326", "resampleAlg": "bilinear"}
+        if not has_alpha:
+            warp["dstAlpha"] = True
+        rendered = gdal.Warp("", rendered, format="MEM", **warp)
+    else:
+        log.warning(f"no CRS for thumbnail, map overlay may misalign: {item.id}")
+
+    _write_png(rendered, out)
     return out.resolve().as_posix()
 
 

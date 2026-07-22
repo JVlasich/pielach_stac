@@ -8,10 +8,11 @@ gdal.UseExceptions()
 
 
 class _Item:
-    """Minimal stand-in: render_thumbnail only reads .id and .get_self_href()."""
-    def __init__(self, href, id):
+    """Minimal stand-in: render_thumbnail reads .id, .get_self_href() and .properties."""
+    def __init__(self, href, id, properties=None):
         self._href = str(href)
         self.id = id
+        self.properties = properties or {}
 
     def get_self_href(self):
         return self._href
@@ -88,6 +89,26 @@ def test_hillshade_cropped_to_data(tmp_path):
     assert max(w, h) == MAX_EDGE
     # cropped to the 400x800 data window (aspect ~0.5), not the 800x800 grid (aspect 1.0)
     assert abs(w / h - 0.5) < 0.03
+
+
+def test_hillshade_warped_to_4326(tmp_path):
+    # legacy rasters carry no CRS, so the item's proj metadata drives the warp to 4326
+    from osgeo import osr
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(31256)
+    p = tmp_path / "dtm.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(p), 400, 600, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((-53000, 25, 0, 340000, 0, -25))  # no SetProjection: CRS comes from the item
+    ds.GetRasterBand(1).Fill(300.0)
+    ds = None
+    item = _Item(tmp_path / "item" / "item.json", "dtm",
+                 properties={"proj:wkt2": srs.ExportToWkt()})
+    href = render_thumbnail(item, p, "hillshade")
+
+    out = gdal.Open(href)
+    assert out.GetDriver().ShortName == "PNG"
+    assert max(out.RasterXSize, out.RasterYSize) <= MAX_EDGE
+    assert out.RasterCount == 2                    # gray + alpha => the warp ran (1-band = skipped)
 
 
 def _las(path, n=800):

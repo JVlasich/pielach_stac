@@ -186,3 +186,10 @@ def test_item_gets_title(tmp_path, write_tif):
     item2 = build_item(discover(tmp_path)[0], CAMP,
                        properties={"byId": {"pielach_2023-02-08_dsm_etrs89": {"title": "Custom"}}})
     assert item2.properties["title"] == "Custom"
+
+
+def test_item_title_uses_variant_label(tmp_path, write_tif):
+    # variant tokens (filled/masked) survive into the title instead of collapsing to the category
+    write_tif(tmp_path / "pielach_2023-02-08_dtm_filled.tif", 10)
+    item = build_item(discover(tmp_path)[0], CAMP)
+    assert item.properties["title"] == "dtm filled 2023-02-08"
