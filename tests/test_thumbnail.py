@@ -8,14 +8,29 @@ gdal.UseExceptions()
 
 
 class _Item:
-    """Minimal stand-in: render_thumbnail reads .id, .get_self_href() and .properties."""
-    def __init__(self, href, id, properties=None):
+    """Minimal stand-in: render_thumbnail reads .id, .get_self_href(), .properties and .bbox."""
+    def __init__(self, href, id, properties=None, bbox=None):
         self._href = str(href)
         self.id = id
         self.properties = properties or {}
+        self.bbox = bbox
 
     def get_self_href(self):
         return self._href
+
+
+def _wgs84_bbox(srs, gt, w, h):
+    """[minlon, minlat, maxlon, maxlat] of a raster's corners, matching what extract publishes."""
+    from osgeo import osr
+    wgs = osr.SpatialReference()
+    wgs.ImportFromEPSG(4326)
+    wgs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    ct = osr.CoordinateTransformation(srs, wgs)
+    corners = [(gt[0], gt[3]), (gt[0] + w * gt[1], gt[3]),
+               (gt[0] + w * gt[1], gt[3] + h * gt[5]), (gt[0], gt[3] + h * gt[5])]
+    pts = ct.TransformPoints(corners)
+    lons, lats = [p[0] for p in pts], [p[1] for p in pts]
+    return [min(lons), min(lats), max(lons), max(lats)]
 
 
 def _tif(path, w, h, bands, dtype=gdal.GDT_Byte):
@@ -96,19 +111,49 @@ def test_hillshade_warped_to_4326(tmp_path):
     from osgeo import osr
     srs = osr.SpatialReference()
     srs.ImportFromEPSG(31256)
+    gt = (-53000, 25, 0, 340000, 0, -25)  # no SetProjection: CRS comes from the item
     p = tmp_path / "dtm.tif"
     ds = gdal.GetDriverByName("GTiff").Create(str(p), 400, 600, 1, gdal.GDT_Float32)
-    ds.SetGeoTransform((-53000, 25, 0, 340000, 0, -25))  # no SetProjection: CRS comes from the item
+    ds.SetGeoTransform(gt)
     ds.GetRasterBand(1).Fill(300.0)
     ds = None
     item = _Item(tmp_path / "item" / "item.json", "dtm",
-                 properties={"proj:wkt2": srs.ExportToWkt()})
+                 properties={"proj:wkt2": srs.ExportToWkt()},
+                 bbox=_wgs84_bbox(srs, gt, 400, 600))
     href = render_thumbnail(item, p, "hillshade")
 
     out = gdal.Open(href)
     assert out.GetDriver().ShortName == "PNG"
     assert max(out.RasterXSize, out.RasterYSize) <= MAX_EDGE
     assert out.RasterCount == 2                    # gray + alpha => the warp ran (1-band = skipped)
+
+
+def test_thumbnail_extent_pinned_to_item_bbox(tmp_path):
+    # STAC Browser overlays the PNG onto item.bbox with no reprojection, so the PNG must span
+    # exactly item.bbox. Use a bbox whose aspect differs from the raster grid: the PNG's pixel
+    # aspect must follow the bbox, not the raster's own (auto-warp) reprojected extent.
+    from osgeo import osr
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(31256)
+    gt = (-53000, 25, 0, 340000, 0, -25)
+    p = tmp_path / "dtm.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(p), 500, 500, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform(gt)
+    ds.GetRasterBand(1).Fill(300.0)
+    ds = None
+    # raster center in 4326, then a deliberate 2:1 (lon:lat) box around it, well inside the data
+    wgs = osr.SpatialReference(); wgs.ImportFromEPSG(4326)
+    wgs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    ct = osr.CoordinateTransformation(srs, wgs)
+    clon, clat, _ = ct.TransformPoint(gt[0] + 250 * gt[1], gt[3] + 250 * gt[5])
+    bbox = [clon - 0.03, clat - 0.015, clon + 0.03, clat + 0.015]
+    item = _Item(tmp_path / "item" / "item.json", "dtm",
+                 properties={"proj:wkt2": srs.ExportToWkt()}, bbox=bbox)
+    href = render_thumbnail(item, p, "hillshade")
+
+    out = gdal.Open(href)
+    lon_span, lat_span = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    assert abs((out.RasterXSize / out.RasterYSize) / (lon_span / lat_span) - 1) < 0.03
 
 
 def _las(path, n=800):

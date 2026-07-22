@@ -106,15 +106,18 @@ def render_thumbnail(item, src_path, kind: str) -> str:
                                   bandList=bands, resampleAlg="average", srcWin=win)
 
     srs_in = _thumb_srs(item, file_srs)
-    if srs_in:
-        # warp so the browser's bbox overlay is geometrically correct; dstAlpha keeps the
-        # rotated margins transparent (skip when the source already carries its own alpha)
-        warp = {"srcSRS": srs_in, "dstSRS": "EPSG:4326", "resampleAlg": "bilinear"}
+    if srs_in and item.bbox:
+        # warp to plate-carree AND pin the extent to item.bbox: the PNG carries no georeference,
+        # STAC Browser overlays it onto that exact box with no reprojection, so warp's own
+        # (larger) auto-extent would misalign. dstAlpha keeps the rotated margins transparent
+        # (skip when the source already carries its own alpha)
+        warp = {"srcSRS": srs_in, "dstSRS": "EPSG:4326", "resampleAlg": "bilinear",
+                "outputBounds": item.bbox, "outputBoundsSRS": "EPSG:4326"}
         if not has_alpha:
             warp["dstAlpha"] = True
         rendered = gdal.Warp("", rendered, format="MEM", **warp)
     else:
-        log.warning(f"no CRS for thumbnail, map overlay may misalign: {item.id}")
+        log.warning(f"no CRS/bbox for thumbnail, map overlay may misalign: {item.id}")
 
     _write_png(rendered, out)
     return out.resolve().as_posix()
