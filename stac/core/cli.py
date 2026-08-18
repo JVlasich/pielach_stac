@@ -12,6 +12,7 @@ import textwrap
 from pathlib import Path
 
 from ..catalog import extract, manager
+from ..catalog.policy import RunPolicy
 from ..core import config
 from ..core.log import setup
 
@@ -119,12 +120,7 @@ def main():
         raise NotADirectoryError(f"Processed root not found: {root}")
     out = Path(cfg["out"]) if cfg["out"] else root / "catalog"
 
-    res = manager.update_catalog(
-        root, out, policy_stale=cfg["stale"], dry_run=cfg["dryRun"], force=cfg["force"],
-        validate=cfg["validate"], policy_unknown=cfg["unknownAssets"],
-        policy_non_cn=cfg["nonCloudNative"], policy_ids=cfg["idCollisions"],
-        only=cfg["only"], asset_hrefs=cfg["assetHrefs"],
-        min_points=cfg["minPoints"], thumbnails=cfg["thumbnails"])
+    res = manager.update_catalog(root, out, RunPolicy.from_config(cfg))
     ok, failed = res["ok"], res["failed"]
 
     # Summary

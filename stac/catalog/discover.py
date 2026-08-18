@@ -16,6 +16,7 @@ from pathlib import Path
 from osgeo import gdal
 
 from ..core.registry import STEM_PATTERNS, LABELS, SIDECAR_EXTENSIONS
+from .policy import RunPolicy
 log = logging.getLogger(__name__)
 
 try:  # optional, (pip install gdal-utils on GDAL < 3.2)
@@ -246,16 +247,16 @@ def _handle_unknown(path: Path, reason: str, policy: str) -> None:
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-def discover(folder: str | Path, policy_unknown: str = "warn", stem_patterns=None, labels=None,
-             policy_non_cn: str = "warn", id_prefix: str | None = None,
+def discover(folder: str | Path, policy: RunPolicy = RunPolicy(), *,
+             stem_patterns=None, labels=None, id_prefix: str | None = None,
              exclude: list[str] | None = None) -> list:
     """Discover Products under a campaign folder. Walks a folder, applies policies,
     assigns .group (for pcl-tiles). Pass merge_overrides() output to apply per-campaign overrides.
 
     Arguments:
         - folder ; the folder to be walked
-        - policy_unknown ; in ("warn","skip","raise") decides how to handle unknown assets
-        - policy_non_cn ; in ("warn","skip","raise") decides how to handle non cloud-native assets
+        - policy ; RunPolicy for this run. Read here: unknown_assets (unclassifiable files)
+          and non_cloud_native (files without a cloud-native twin)
         - stem_patterns ; which stem-patterns to look for
         - labels ; the labels the stem-patterns point to
         - id_prefix ; fallback for files without ISO token, guarantees unique ID
@@ -284,11 +285,11 @@ def discover(folder: str | Path, policy_unknown: str = "warn", stem_patterns=Non
     for f in candidates:
         bm = _best_match(f.name, sp)
         if bm is None:
-            _handle_unknown(f, "no registry match", policy_unknown)
+            _handle_unknown(f, "no registry match", policy.unknown_assets)
             continue
         label, pat, ext = bm
         if label not in lb:
-            _handle_unknown(f, f"label {label!r} not in LABELS", policy_unknown)
+            _handle_unknown(f, f"label {label!r} not in LABELS", policy.unknown_assets)
             continue
         info = lb[label]
         if info["category"] == "ignore":
@@ -297,7 +298,7 @@ def discover(folder: str | Path, policy_unknown: str = "warn", stem_patterns=Non
         cn = _probe_cloud_native(f, info["kind"], ext)
         matches.append(_Match(f, label, info["category"], ext, info, cn))
 
-    matches = _resolve_twins(matches, policy_non_cn)
+    matches = _resolve_twins(matches, policy.non_cloud_native)
 
     products = []
     seen_ids: dict = {}

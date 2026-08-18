@@ -15,6 +15,7 @@ from .build import build_collection, build_item, campaign_date
 from .discover import discover
 from .extract import file_meta, pcl_point_count
 from .hierarchy import resolve_hierarchy
+from .policy import RunPolicy
 from .thumbnail import pcl_thumbnails_available, render_thumbnail
 
 log = logging.getLogger(__name__)
@@ -26,19 +27,10 @@ CATALOG_DEFAULTS = {
     # resolved in cli.py
     "root": None,
     "out": None,             # default: <root>/catalog
-    "stale": "warn",         # warn | remove | raise (items and collections)
-    "dryRun": False,
-    "force": False,          # skip checks, rebuild every item
-    "validate": False,       # STAC-validate after save (needs pystac[validation])
-    "unknownAssets": "warn", # warn | skip | raise for unclassifiable files
-    "nonCloudNative": "warn",# warn | skip | raise for files without a CN twin
-    "only": None,            # glob over campaign dir names; skips the stale-collection sweep
-    "idCollisions": "warn",  # warn | raise for duplicate item/subcollection ids across campaigns
-    "assetHrefs": "absolute",# relative (self-contained) | absolute (keep build-time paths)
-    "minPoints": 1000,       # drop point-cloud items below this pc:count (degenerate tiles)
+    # the defaults policies live on RunPolicy (policy.py)
+    **RunPolicy.config_defaults(),
     "nbThreads": None,       # opals thread count, None = opals default (all CPUs)
     "exactComputation": True,# exact point statistics (full scan) vs header-only (fast, no stats)
-    "thumbnails": True,      # render PNG thumbnails for raster items (ortho/DSM/DTM)
     # root metadata: with both license and providers set, the root is promoted to a Collection
     "license": None,         # root license (SPDX id or "other")
     "providers": None,       # root providers (STAC list or name-keyed mapping)
@@ -107,16 +99,8 @@ def _needs_rebuild(product, existing_item) -> bool:
 # --- per-campaign pipeline ---
 
 def process_campaign(
-    folder, root, *, # positional
-    dry_run: bool = False,
-    force:   bool = False,
-    policy_unknown: str = "warn",
-    policy_non_cn:  str = "warn",
-    policy_stale:   str = "warn",
-    policy_ids:     str = "warn",
+    folder, root, policy: RunPolicy, *, # positional
     seen_ids: dict | None = None,
-    min_points: int = 1000,
-    thumbnails: bool = True,
     thumb_jobs: list | None = None
 ) -> dict:
 
@@ -128,19 +112,13 @@ def process_campaign(
 
     Arguments:
         - folder ; path to the campaign folder
-        - dry_run ; early returns, no writes except last_run.json. Readers not called except file_meta
-        - force ; skip idempotency, build all items
-        - policy_unknown ; in ("warn","skip","raise") decides how to handle unknown assets
-        - policy_non_cn ; in ("warn","skip","raise") decides how to handle non cloud-native assets
-        - policy_stale ; in ("warn","raise", "remove") decides how to handle existing items that were removed from disk
-        - policy_ids ; in ("warn","raise") decides how to handle id collisions in the run namespace
-          (collection ids always raise, see _register_id)
+        - policy ; RunPolicy for this run
         - seen_ids ; {id: (kind, source)} passed in update_catalog() and mutated inplace
     Returns:
         {"rebuilt": n, "reused": n, "stale": n, "failed": n}
     Exceptions:
         - missing campaign.yaml
-        - item/subcollection id collisions when policy_ids == "raise", collection ids always
+        - item/subcollection id collisions when policy.id_collisions == "raise", collection ids always
     """
     folder = Path(folder)
 
@@ -153,17 +131,17 @@ def process_campaign(
 
     camp = campaign_date(folder.name)
     camp_id = (sc.get("collection") or {}).get("id") or f"pielach_{camp.isoformat()}"
-    _register_id(seen_ids, camp_id, "collection", folder.name, policy_ids)
+    _register_id(seen_ids, camp_id, "collection", folder.name, policy.id_collisions)
 
-    products = discover(folder, policy_unknown=policy_unknown, stem_patterns=sp, labels=lb,
-                        policy_non_cn=policy_non_cn, id_prefix=camp_id, exclude=sc.get("exclude"))
+    products = discover(folder, policy, stem_patterns=sp, labels=lb,
+                        id_prefix=camp_id, exclude=sc.get("exclude"))
 
     if not products:
         log.warning(f"no products in {folder.name}, campaign {camp_id} untouched")
         return {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 0}
 
     for p in products:
-        _register_id(seen_ids, p.id, "item", folder.name, policy_ids)
+        _register_id(seen_ids, p.id, "item", folder.name, policy.id_collisions)
 
     old = root.get_child(camp_id)
     existing, parent_of = {}, {}
@@ -186,7 +164,7 @@ def process_campaign(
 
     # Drop pcl tiles with VERY few points (configurable) use laspy header read.
     # previously cataloged is removed not kept stale
-    if min_points:
+    if policy.min_points:
         kept = []
         for p in products:
             if p.kind == "pcl":
@@ -196,8 +174,8 @@ def process_campaign(
                     log.warning(f"point-count read failed, tile kept: {p.id} ({e})")
                     kept.append(p)
                     continue
-                if n < min_points:
-                    log.warning(f"tiny tile dropped ({n} pts < {min_points}): {p.id}")
+                if n < policy.min_points:
+                    log.warning(f"tiny tile dropped ({n} pts < {policy.min_points}): {p.id}")
                     existing.pop(p.id, None)
                     continue
             kept.append(p)
@@ -210,11 +188,11 @@ def process_campaign(
     failed_items = []
     for p in products:
         prev = existing.get(p.id)
-        if not force and prev is not None and not _needs_rebuild(p, prev):
+        if not policy.force and prev is not None and not _needs_rebuild(p, prev):
             p.item = prev.clone()
             reused += 1
             continue
-        if not dry_run:
+        if not policy.dry_run:
             # created survives rebuilds, updated stamps in build_item
             created = prev.common_metadata.created if prev else None
             try:
@@ -225,7 +203,7 @@ def process_campaign(
                 failed_items.append(p)
                 continue
             a0 = p.assets[0]
-            if thumbnails and thumb_jobs is not None and a0.thumbnail:
+            if policy.thumbnails and thumb_jobs is not None and a0.thumbnail:
                 if a0.kind == "raster":
                     kind = "rgb" if a0.category == "orthophoto" else "hillshade"
                     thumb_jobs.append((p.item, a0.path, kind))
@@ -241,9 +219,9 @@ def process_campaign(
 
     stale_ids = sorted(set(existing) - {p.id for p in products})
     for sid in stale_ids:
-        if policy_stale == "raise":
+        if policy.stale == "raise":
             raise ValueError(f"stale item {sid}: file gone from {folder.name}")
-        if policy_stale == "warn":
+        if policy.stale == "warn":
             log.warning(f"stale item kept, asset href dangles: {sid}")
         else:
             log.info(f"removed stale item: {sid}")
@@ -252,12 +230,12 @@ def process_campaign(
               "failed": len(failed_items)}
     log.info(f"{camp_id}: {rebuilt} rebuilt, {reused} reused, {len(stale_ids)} stale, "
              f"{len(failed_items)} failed")
-    if dry_run:
+    if policy.dry_run:
         return counts
 
     # kept-stale items stay exactly where they were: bucket clones by old parent id
     stale_clones: dict = {}
-    if policy_stale == "warn":
+    if policy.stale == "warn":
         for sid in stale_ids:
             stale_clones.setdefault(parent_of[sid], []).append(existing[sid].clone())
 
@@ -268,7 +246,7 @@ def process_campaign(
             continue
         # the subdir already carries the campaign (pre-tool writes <stem>_tiles), take it as-is
         sub_id = node.name
-        _register_id(seen_ids, sub_id, "subcollection", folder.name, policy_ids)
+        _register_id(seen_ids, sub_id, "subcollection", folder.name, policy.id_collisions)
         cat = node.products[0].category
         camp_meta = sc.get("collection") or {}  # tiles inherit the campaign's attribution
         meta = {"title": node.title or f"{cat} tiles",
@@ -373,20 +351,7 @@ class _WarnCollector(logging.Handler):
         self.msgs.append(self.format(record))
 
 
-def update_catalog(
-    root, out_dir, *, # positional
-    dry_run:    bool = False,
-    force:      bool = False,
-    validate:   bool = False,
-    only: str | None = None,
-    asset_hrefs: str = "absolute",
-    min_points: int = 1000,
-    policy_stale:   str = "warn",
-    policy_unknown: str = "warn",
-    policy_non_cn:  str = "warn",
-    policy_ids:     str = "warn",
-    thumbnails:     bool = True,
-) -> dict:
+def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
     """Re-run the whole catalog over a processed-datasets root (idempotent).
     Campaign dirs = direct subdirs with an ISO date token; failures are isolated.
 
@@ -398,18 +363,7 @@ def update_catalog(
     Arguments:
         - root ; Path to be scanned for subfolders
         - out_dir ; Path to write the finished catalog to
-        - dry_run ; no writes
-        - force ; skip checks, rebuild all
-        - validate ; calls pystac.validate at the end (requires dependency)
-        - only ; look at a single campaign
-        - asset_hrefs ; "absolute" (keep build-time paths, default) or "relative"
-          (self-contained); thumbnail assets are always written relative
-        - policy_unknown ; in ("warn","skip","raise") decides how to handle unknown assets
-        - policy_non_cn ; in ("warn","skip","raise") decides how to handle non cloud-native assets
-        - policy_stale ; in ("warn","raise", "remove") decides how to handle stale collections
-        - policy_ids ; in ("warn","raise") decides how to handle id collisions
-          (one namespace: root + collections + subcollections + items;
-          collection ids always raise, they cannot be resolved by keeping the first owner)
+        - policy ; RunPolicy for this run, passed unchanged to every campaign
 
     Returns:
         {"ok": {campaign: counts}, "failed": {campaign: error},
@@ -430,8 +384,8 @@ def update_catalog(
         for d in sorted(root.iterdir()):
             if not d.is_dir() or d.resolve() == out_dir.resolve():
                 continue
-            if only and not fnmatch.fnmatch(d.name, only):
-                log.debug(f"only={only!r} skips {d.name}")
+            if policy.only and not fnmatch.fnmatch(d.name, policy.only):
+                log.debug(f"only={policy.only!r} skips {d.name}")
                 continue
             try:
                 campaign_date(d.name)
@@ -441,15 +395,12 @@ def update_catalog(
             log.info(f"\033[96m=== {d.name} ===\033[00m")
             try:
                 ok[d.name] = process_campaign(
-                    d, cat, policy_stale=policy_stale, dry_run=dry_run, force=force,
-                    policy_unknown=policy_unknown, policy_non_cn=policy_non_cn,
-                    policy_ids=policy_ids, seen_ids=seen_ids, min_points=min_points,
-                    thumbnails=thumbnails, thumb_jobs=thumb_jobs)
+                    d, cat, policy, seen_ids=seen_ids, thumb_jobs=thumb_jobs)
             except Exception as e:
                 log.exception(f"FAILED: {d.name}")
                 failed[d.name] = str(e)
 
-        if only:
+        if policy.only:
             stale_colls = []
             log.info("only-filtered run: stale-collection sweep skipped")
         else:
@@ -462,9 +413,9 @@ def update_catalog(
                 log.warning(f"collection kept, no surviving campaign this run "
                             f"(dir gone or campaign failed): {cid}")
                 continue
-            if policy_stale == "raise":
+            if policy.stale == "raise":
                 raise ValueError(f"stale collection {cid}: no campaign dir in {root}")
-            if policy_stale == "remove" and not dry_run:
+            if policy.stale == "remove" and not policy.dry_run:
                 cat.remove_child(cid)
                 log.info(f"removed stale collection: {cid}")
             else:
@@ -473,11 +424,11 @@ def update_catalog(
         if isinstance(cat, pystac.Collection):  # promoted root: aggregate extent over campaigns
             cat.extent = _union_extent(list(cat.get_children()))
 
-        if not dry_run:
+        if not policy.dry_run:
             cat.normalize_hrefs(str(out_dir))
             if isinstance(cat, pystac.Collection):
                 cat.set_self_href(str(out_dir / "catalog.json"))  # stable root entry point (not collection.json)
-            if thumbnails:
+            if policy.thumbnails:
                 # thumb creation for pcl -> make sure laspy can load
                 pcl_ok = pcl_thumbnails_available()
                 if not pcl_ok and any(k == "pointcloud" for *_, k in thumb_jobs):
@@ -491,7 +442,7 @@ def update_catalog(
                             href=href, media_type="image/png", roles=["thumbnail"]))
                     except Exception as e:
                         log.warning(f"thumbnail failed for {item.id}: {e}")
-            if asset_hrefs == "relative":
+            if policy.asset_hrefs == "relative":
                 cat.make_all_asset_hrefs_relative()
             # thumbnails live inside the catalog tree: always relative, both href modes
             for item in cat.get_items(recursive=True):
@@ -501,7 +452,7 @@ def update_catalog(
                             asset.get_absolute_href(), item.get_self_href())
             cat.save(catalog_type=pystac.CatalogType.SELF_CONTAINED)
             log.info(f"catalog saved: {out_dir}")
-            if validate:
+            if policy.validate:
                 validation = _validate_catalog(cat)
     except Exception as e:
         fatal = f"{type(e).__name__}: {e}"
@@ -512,7 +463,8 @@ def update_catalog(
                "validation": validation, "warnings": warns.msgs}
         if fatal:
             res["fatal"] = fatal
-        _write_report(res, dry_run=dry_run, force=force, only=only, stale=policy_stale)
+        _write_report(res, dry_run=policy.dry_run, force=policy.force,
+                      only=policy.only, stale=policy.stale)
     return res
 
 

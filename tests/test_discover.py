@@ -5,6 +5,7 @@ import pytest
 from osgeo import gdal
 
 from stac.catalog.discover import COG_MEDIA_TYPE, _ISO_DATE, discover
+from stac.catalog.policy import RunPolicy
 
 gdal.UseExceptions()
 
@@ -58,7 +59,7 @@ def discovered(tmp_path_factory):
     capture = logging.StreamHandler(buf)
     logging.getLogger().addHandler(capture)
     try:
-        products = discover(tmp, policy_unknown="warn", id_prefix="pielach_2023-02-08")
+        products = discover(tmp, id_prefix="pielach_2023-02-08")
     finally:
         logging.getLogger().removeHandler(capture)
     return tmp, products, buf.getvalue()
@@ -136,7 +137,7 @@ def test_tiles_share_group_rest_flat(discovered):
 
 def test_skip_policy_is_old_cloud_native_only_rule(discovered):
     tmp, _, _ = discovered
-    skipped = discover(tmp, policy_unknown="skip", policy_non_cn="skip")
+    skipped = discover(tmp, RunPolicy(unknown_assets="skip", non_cloud_native="skip"))
     assert len(skipped) == 7
     assert all(a.cloud_native for p in skipped for a in p.assets)
 

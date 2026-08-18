@@ -1,0 +1,69 @@
+"""RunPolicy: the run-wide knobs, built once from config and passed down unchanged.
+
+One default per field, declared here. `CATALOG_DEFAULTS` derives the config template from
+`config_defaults()`; `cli.main` builds the instance with `from_config()` and hands the same
+object to update_catalog -> process_campaign -> discover. Root metadata (id/title/license/
+providers) and the OPALS options stay out: they are not per-run policy.
+"""
+
+from dataclasses import dataclass, fields
+from typing import Literal
+
+# config key (camelCase, as written in YAML / argparse) -> field name.
+# Declaration order also fixes the key order of the generated config template.
+_FIELD_MAP = {
+    "stale":          "stale",
+    "dryRun":         "dry_run",
+    "force":          "force",
+    "validate":       "validate",
+    "unknownAssets":  "unknown_assets",
+    "nonCloudNative": "non_cloud_native",
+    "only":           "only",
+    "idCollisions":   "id_collisions",
+    "assetHrefs":     "asset_hrefs",
+    "minPoints":      "min_points",
+    "thumbnails":     "thumbnails",
+}
+
+_ALLOWED = {
+    "stale":            ("warn", "remove", "raise"),
+    "unknown_assets":   ("warn", "skip", "raise"),
+    "non_cloud_native": ("warn", "skip", "raise"),
+    "id_collisions":    ("warn", "raise"),
+    "asset_hrefs":      ("absolute", "relative"),
+}
+
+
+@dataclass(frozen=True)
+class RunPolicy:
+    """Immutable knob set for one catalog run."""
+
+    stale: Literal["warn", "remove", "raise"] = "warn"   # items and collections gone from disk
+    dry_run: bool = False
+    force: bool = False                                  # skip checks, rebuild every item
+    validate: bool = False                               # STAC-validate after save (needs pystac[validation])
+    unknown_assets: Literal["warn", "skip", "raise"] = "warn"    # unclassifiable files
+    non_cloud_native: Literal["warn", "skip", "raise"] = "warn"  # files without a CN twin
+    only: str | None = None                              # glob over campaign dir names; skips the stale-collection sweep
+    id_collisions: Literal["warn", "raise"] = "warn"     # duplicate item/subcollection ids across campaigns
+    asset_hrefs: Literal["absolute", "relative"] = "absolute"  # relative (self-contained) | absolute (build-time paths)
+    min_points: int = 1000                               # drop point-cloud items below this pc:count (degenerate tiles)
+    thumbnails: bool = True                              # render PNG thumbnails for raster items (ortho/DSM/DTM)
+
+    def __post_init__(self):
+        for name, allowed in _ALLOWED.items():
+            value = getattr(self, name)
+            if value not in allowed:
+                raise ValueError(f"{name}={value!r} not in {allowed}")
+
+    @classmethod
+    def from_config(cls, cfg: dict) -> "RunPolicy":
+        """Build from a resolved config section (defaults < file < CLI).
+        Keys absent from cfg keep the field default."""
+        return cls(**{attr: cfg[key] for key, attr in _FIELD_MAP.items() if key in cfg})
+
+    @classmethod
+    def config_defaults(cls) -> dict:
+        """{camelCase config key: default} for CATALOG_DEFAULTS."""
+        defaults = {f.name: f.default for f in fields(cls)}
+        return {key: defaults[attr] for key, attr in _FIELD_MAP.items()}
