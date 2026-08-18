@@ -10,6 +10,9 @@ Size collection, file counting and extension mapping are each optional. With
 all three disabled (--plain) the tool acts as a faster, JSON-capable drop-in
 for Windows' "tree /f /a": every file listed, no stats, no stat() calls.
 
+Reported directory sizes include everything below them. File counts and
+extension distributions stay per-directory.
+
 Usage:
     python tree_crawler.py P:\\DATA\\PIELACH
     python tree_crawler.py ./data --format json --output tree.json
@@ -39,10 +42,15 @@ DEFAULTS = {
     "no_size": False,
     "no_count": False,
     "no_ext": False,
+    "no_recursive_size": False,
     "plain": False,
     "verbose": False,
     "max_listed": 20,
 }
+
+# First line of a text dump whose directory sizes already include their
+# subtrees. Older dumps carry no marker, which means own-file sizes.
+SIZES_MARKER = "# sizes: recursive"
 
 
 @dataclass
@@ -51,11 +59,15 @@ class DirNode:
 
     total_size, file_count and ext_distribution are None when their
     collection was disabled.
+
+    total_size counts this directory's own files only; subtree_size adds
+    everything below it and is None when the recursive rollup did not run.
     """
     name: str
     path: str
     children: list[DirNode] = field(default_factory=list)
     total_size: int | None = None
+    subtree_size: int | None = None
     file_count: int | None = None
     ext_distribution: dict[str, int] | None = None
     summarized: bool = False
@@ -70,6 +82,7 @@ def crawl_directory(
     collect_size: bool = True,
     count_files: bool = True,
     map_ext: bool = True,
+    recursive_size: bool = True,
     verbose: bool = False,
 ) -> DirNode:
     """Crawl root and return a DirNode tree.
@@ -77,21 +90,51 @@ def crawl_directory(
     Directories with >= threshold files are summarized (extension
     distribution only, no individual filenames). Summarization requires
     count_files; with counting disabled every file is listed.
+
+    With recursive_size the walk ignores max_depth and prunes afterwards:
+    a directory can only be weighed if everything under it was visited, so
+    a depth-limited walk would report totals that are silently too low.
+    Without it (or without collect_size) max_depth prunes the walk itself,
+    which is the cheap path for a shallow overview of a huge tree.
     """
     root = root.resolve()
     if not root.is_dir():
         print(f"Error: not a directory: {root}", file=sys.stderr)
         sys.exit(1)
-    return _crawl_one(
+    roll_up = recursive_size and collect_size
+    tree = _crawl_one(
         root,
         threshold=threshold,
-        max_depth=max_depth,
+        max_depth=None if roll_up else max_depth,
         current_depth=0,
         collect_size=collect_size,
         count_files=count_files,
         map_ext=map_ext,
         verbose=verbose,
     )
+    if roll_up:
+        _accumulate_sizes(tree)
+        _prune_depth(tree, max_depth, current_depth=0)
+    return tree
+
+
+def _accumulate_sizes(node: DirNode) -> int:
+    """Fills in subtree_size bottom-up and returns it."""
+    node.subtree_size = (node.total_size or 0) + sum(
+        _accumulate_sizes(child) for child in node.children
+    )
+    return node.subtree_size
+
+
+def _prune_depth(node: DirNode, max_depth: int | None, current_depth: int) -> None:
+    """Drops children below max_depth, after their sizes were rolled up."""
+    if max_depth is None:
+        return
+    if current_depth >= max_depth:
+        node.children = []
+        return
+    for child in node.children:
+        _prune_depth(child, max_depth, current_depth + 1)
 
 
 def _crawl_one(
@@ -181,6 +224,8 @@ def _crawl_one(
 
 def render_text(node: DirNode, *, max_listed: int = DEFAULTS["max_listed"]) -> str:
     lines: list[str] = []
+    if node.subtree_size is not None:
+        lines.append(SIZES_MARKER)
     lines.append(f"{node.name}\\{_size_suffix(node)}")
     _render_children(node, lines, prefix="", max_listed=max_listed)
     return "\n".join(lines)
@@ -252,9 +297,10 @@ def _has_files(node: DirNode) -> bool:
 
 
 def _size_suffix(node: DirNode) -> str:
-    if node.total_size is None:
+    size = node.subtree_size if node.subtree_size is not None else node.total_size
+    if size is None:
         return ""
-    return f" ({_human_size(node.total_size)})"
+    return f" ({_human_size(size)})"
 
 
 def _files_header(node: DirNode) -> str | None:
@@ -274,13 +320,13 @@ def _files_header(node: DirNode) -> str | None:
 def _human_size(nbytes: int) -> str:
     if nbytes == 0:
         return "0 B"
-    for unit in ("B", "KB", "MB", "GB", "TB"):
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if abs(nbytes) < 1024:
             if unit == "B":
                 return f"{nbytes} B"
             return f"{nbytes:.1f} {unit}"
         nbytes /= 1024
-    return f"{nbytes:.1f} PB"
+    return f"{nbytes:.1f} PiB"
 
 
 def _format_ext_dist(ext_dist: dict[str, int]) -> str:
@@ -307,6 +353,8 @@ def to_dict(node: DirNode) -> dict:
     }
     if node.total_size is not None:
         d["total_size"] = node.total_size
+    if node.subtree_size is not None:
+        d["subtree_size"] = node.subtree_size
     if node.file_count is not None:
         d["file_count"] = node.file_count
         d["summarized"] = node.summarized
@@ -335,6 +383,11 @@ def build_parser() -> argparse.ArgumentParser:
             Directories with many files are summarized by extension distribution.
             --plain disables size, count and extension mapping for a fast
             tree /f /a style full listing. Output is read-only.
+
+            Directory sizes include their subtrees. Weighing a directory means
+            visiting everything under it, so --max-depth only shortens the
+            output, not the walk; add --no-recursive-size to prune the walk and
+            report own-file sizes as before.
         """)
     )
 
@@ -356,6 +409,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Skip file counting and threshold summarization")
     parser.add_argument("--no-ext", action="store_true",
                         help="Skip extension distribution mapping")
+    parser.add_argument("--no-recursive-size", action="store_true",
+                        help="Report own-file sizes instead of subtree totals "
+                             "(lets --max-depth prune the walk again)")
     parser.add_argument("--plain", action="store_true",
                         help="tree /f /a drop-in: implies --no-size --no-count --no-ext, lists all files")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -380,6 +436,7 @@ def main() -> None:
         collect_size=not no_size,
         count_files=not no_count,
         map_ext=not no_ext,
+        recursive_size=not args.no_recursive_size,
         verbose=args.verbose,
     )
 

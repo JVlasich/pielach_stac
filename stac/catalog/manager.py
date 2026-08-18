@@ -143,7 +143,12 @@ def process_campaign(
         - item/subcollection id collisions when policy_ids == "raise", collection ids always
     """
     folder = Path(folder)
-    sc = load_sidecar(folder / "campaign.yaml")
+
+    try:
+        sc = load_sidecar(folder / "campaign.yaml")
+    except FileNotFoundError:
+        sc = load_sidecar(folder / "campaign.yml")
+
     sp, lb = merge_overrides(sc.get("patterns"), sc.get("labels"))
 
     camp = campaign_date(folder.name)

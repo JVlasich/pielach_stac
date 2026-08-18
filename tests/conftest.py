@@ -17,7 +17,7 @@ def _write_tif(path, value: int, size: int = 4) -> None:
 
 def _write_masked_tif(path, value: int = 100) -> None:
     """64x64 on the _write_tif grid, nodata=0, only the left half holds data. Large enough that
-    the valid half survives the footprint min-part filter ((10 px)^2 at 25 m/px = 62500 m^2)."""
+    the valid half survives the footprint min-part filter (32x64 cells at 25 m = 1.28 km^2)."""
     srs = osr.SpatialReference()
     srs.ImportFromEPSG(31256)
     ds = gdal.GetDriverByName("GTiff").Create(str(path), 64, 64, 1, gdal.GDT_Byte)

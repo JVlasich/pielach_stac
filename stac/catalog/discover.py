@@ -269,7 +269,7 @@ def discover(folder: str | Path, policy_unknown: str = "warn", stem_patterns=Non
     files = _walk(folder)
     sidecars = [f for f in files if _sidecar_ext(f.name)]
     # campaign.yaml is the per-campaign sidecar, never an asset
-    candidates = [f for f in files if not _sidecar_ext(f.name) and f.name.lower() != "campaign.yaml"]
+    candidates = [f for f in files if not _sidecar_ext(f.name) and f.name.lower() not in {"campaign.yaml", "campaign.yml"}]
 
     if exclude:
         kept = []

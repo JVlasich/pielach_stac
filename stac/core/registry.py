@@ -7,7 +7,10 @@ STEM_PATTERNS entries (omitted require/forbid/extensions default to []).
 
 override merge, validation"""
 
+import logging
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 # stem_patterns: label -> match rule. split.("_") -> set -> match agaisnt required
 # {label: {"require": [], "forbid": [], "extensions": ""}}
@@ -221,7 +224,10 @@ def _validate(stem_patterns, labels) -> None:
         if not isinstance(value, dict) or not value:
             raise ValueError(f"pattern {key!r}: set at least one key")
         for k in _PATTERN_KEYS:
-            value.setdefault(k, [])  # omitted require/forbid/extensions -> []
+            if isinstance(value.get(k), str):  # a bare scalar would iterate character-wise
+                log.warning(f"pattern {key!r}: {k} is the string {value[k]!r}, read as a one-element list")
+                value[k] = [value[k]]
+            value[k] = [str(t).lower() for t in value.get(k, [])]  # omitted -> []; matching is lowercased
     for key, value in labels.items():
         missing = [k for k in _LABEL_KEYS if k not in value]
         if missing:

@@ -1,0 +1,7 @@
+# Normalize line endings across the Windows/Linux split.
+# The repo folder is synced by Nextcloud, which copies raw bytes, so both
+# checkouts must agree on the working-tree endings.
+* text=auto eol=lf
+
+# Batch files stay CRLF for cmd.exe.
+*.bat text eol=crlf

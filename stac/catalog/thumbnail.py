@@ -10,6 +10,7 @@ gdal.UseExceptions()
 log = logging.getLogger(__name__)
 
 MAX_EDGE = 512  # longest thumbnail edge in px
+HS_EDGE = 1024  # render hillshade at this res, then downscale to MAX_EDGE
 
 
 @functools.lru_cache(maxsize=1) # runs function only first time its called
@@ -55,12 +56,20 @@ def _thumb_srs(item, file_srs):
         file_srs.ExportToWkt() if file_srs is not None else None)
 
 
+def _fit(cw: int, ch: int, edge: int) -> tuple[int, int]:
+    """(w, h) scaled so the longest side is <= edge; never upscales."""
+    s = min(1.0, edge / max(cw, ch))
+    return max(1, round(cw * s)), max(1, round(ch * s))
+
+
 def _write_png(ds, out: Path) -> None:
-    """Write ds to PNG (CreateCopy-only driver), longest edge capped at MAX_EDGE."""
+    """Write ds to PNG (CreateCopy-only driver), longest edge capped at MAX_EDGE.
+    Averaged, not point-sampled: nearest here throws most of a thin corridor away
+    and aliases the relief texture, undoing whatever was rendered at HS_EDGE."""
     ow, oh = ds.RasterXSize, ds.RasterYSize
     if max(ow, oh) > MAX_EDGE:
         s = MAX_EDGE / max(ow, oh)
-        ds = gdal.Translate("", ds, format="MEM",
+        ds = gdal.Translate("", ds, format="MEM", resampleAlg="average",
                             width=max(1, round(ow * s)), height=max(1, round(oh * s)))
     gdal.Translate(str(out), ds, format="PNG")
 
@@ -89,28 +98,27 @@ def render_thumbnail(item, src_path, kind: str) -> str:
     win = _data_window(ds.GetRasterBand(1), sw, sh)  # crop nodata margin so thumb matches bbox
     ds = None
     cw, ch = win[2], win[3]
-    if max(cw, ch) <= MAX_EDGE:
-        w, h = cw, ch
-    else:
-        scale = MAX_EDGE / max(cw, ch)
-        w, h = max(1, round(cw * scale)), max(1, round(ch * scale))
-
     if kind == "hillshade":
+        # hillshade is a 3x3 op: without computeEdges it drops every valid pixel touching a
+        # nodata edge, costing 6% of a compact DEM and 45% of a sparse one at any render size.
+        # computeEdges keeps all of them, so HS_EDGE only supersamples for anti-aliasing.
+        w, h = _fit(cw, ch, HS_EDGE)
         small = gdal.Translate("", src, format="MEM", width=w, height=h, srcWin=win)
         # zFactor=1 default, bump if gentle river relief looks flat
-        rendered = gdal.DEMProcessing("", small, "hillshade", format="MEM")  # 1-band, nodata=0
+        rendered = gdal.DEMProcessing("", small, "hillshade", format="MEM",
+                                      computeEdges=True)  # 1-band, nodata=0
     else:
         # RGBA when the source carries an alpha band, keeps nodata edges transparent
+        w, h = _fit(cw, ch, MAX_EDGE)
         bands = [1, 2, 3, 4] if has_alpha else ([1, 2, 3] if nbands >= 3 else [1])
         rendered = gdal.Translate("", src, format="MEM", width=w, height=h,
                                   bandList=bands, resampleAlg="average", srcWin=win)
 
     srs_in = _thumb_srs(item, file_srs)
     if srs_in and item.bbox:
-        # warp to plate-carree AND pin the extent to item.bbox: the PNG carries no georeference,
-        # STAC Browser overlays it onto that exact box with no reprojection, so warp's own
-        # (larger) auto-extent would misalign. dstAlpha keeps the rotated margins transparent
-        # (skip when the source already carries its own alpha)
+        # warp to plate-carree and pin the extent to item.bbox: the PNG carries no georeference,
+        # STAC Browser overlays it onto that exact box with no reprojection.
+        # dstAlpha keeps the rotated margins transparent
         warp = {"srcSRS": srs_in, "dstSRS": "EPSG:4326", "resampleAlg": "bilinear",
                 "outputBounds": item.bbox, "outputBoundsSRS": "EPSG:4326"}
         if not has_alpha:

@@ -28,6 +28,19 @@ def test_empty_pattern_raises():
         merge_overrides({"x": {}}, {})
 
 
+def test_override_tokens_and_extensions_are_lowercased():
+    sp, _ = merge_overrides({"dtm": {"require": ["DTM", "Masked"], "forbid": ["SHD"],
+                                     "extensions": [".TIF"]}}, {})
+    assert sp["dtm"] == {"require": ["dtm", "masked"], "forbid": ["shd"], "extensions": [".tif"]}
+
+
+@pytest.mark.parametrize("key", ["require", "forbid", "extensions"])
+def test_scalar_pattern_key_wrapped_with_warning(key, caplog):
+    sp, _ = merge_overrides({"dtm": {key: "DTM"}}, {})
+    assert sp["dtm"][key] == ["dtm"]
+    assert "one-element list" in caplog.text
+
+
 def test_no_overrides_copies_equal_originals():
     sp, lb = merge_overrides(None, None)
     assert sp == STEM_PATTERNS and lb == LABELS

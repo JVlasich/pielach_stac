@@ -156,6 +156,31 @@ def test_thumbnail_extent_pinned_to_item_bbox(tmp_path):
     assert abs((out.RasterXSize / out.RasterYSize) / (lon_span / lat_span) - 1) < 0.03
 
 
+def test_masked_dem_corridor_survives_hillshade(tmp_path):
+    # a thin masked corridor is almost all nodata edge; a plain 3x3 hillshade drops every
+    # nodata-adjacent pixel and erodes it away. computeEdges keeps every valid pixel, and the
+    # averaged downscale carries them to the PNG instead of point-sampling them out.
+    import numpy as np
+    n, flt_max = 2048, 3.4028234663852886e+38
+    a = np.full((n, n), flt_max, np.float32)
+    yy, xx = np.mgrid[0:n, 0:n]
+    corridor = np.abs(yy - xx) <= 6                     # ~6px diagonal band of gentle relief
+    a[corridor] = (300 + xx * 0.05 + yy * 0.05).astype(np.float32)[corridor]
+    p = tmp_path / "dtm.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(p), n, n, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((0, 1, 0, 0, 0, -1))
+    ds.GetRasterBand(1).WriteArray(a)
+    ds.GetRasterBand(1).SetNoDataValue(flt_max)
+    ds = None
+    item = _Item(tmp_path / "item" / "item.json", "dtm")   # no proj/bbox: isolates the hillshade
+    href = render_thumbnail(item, p, "hillshade")
+
+    out = gdal.Open(href)
+    lit = int((out.GetRasterBand(1).ReadAsArray() > 0).sum())
+    # ~13 px wide over a 2048 px diagonal is ~2400 px at 512; a plain hillshade leaves ~0
+    assert lit > 2000
+
+
 def _las(path, n=800):
     import laspy
     import numpy as np

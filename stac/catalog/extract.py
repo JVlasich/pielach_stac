@@ -28,9 +28,14 @@ log = logging.getLogger(__name__)
 # set by cli after config merge; nbThreads None = opals default (all CPUs)
 OPALS_INFO = {"nbThreads": None, "exactComputation": True}
 
-# mask-footprint parts/holes below (this * effective-pixel)^2 are noise, dropped.
-# higher values collapse the whole corridor to the bbox rectangle.
-_MIN_PART_PX = 10
+# footprint tuning. All in ground units, so every item is filtered the same way
+# regardless of its pixel count (a pixel-derived threshold makes a gap survive in one
+# campaign and vanish in the next, purely because the grids differ in size).
+_FOOTPRINT_GRID = 2048    # px, longest edge of the working grid
+_MIN_PART_M2    = 4000.0  # footprint parts below this are mask noise
+_MIN_HOLE_M2    = 1000.0  # interior gaps below this are not represented
+_SIMPLIFY_M     = 6.0     # vertex tolerance; above a gap's radius the ring collapses
+_MIN_AREA_RATIO = 0.5     # footprint below this share of the valid area -> bbox rectangle
 
 
 @dataclass
@@ -162,70 +167,96 @@ def _wgs84_footprint(srs, proj_bbox: list) -> tuple[dict, list]:
     return geometry, [lonmin, latmin, lonmax, latmax]
 
 
-def _drop_small_holes(poly, min_area: float):
-    """Rebuild a polygon keeping its exterior ring and only interior rings >= min_area.
-    Sliver holes are mask noise that blows up the ring count; large gaps survive."""
+def _drop_small_holes(poly, min_hole: float):
+    """Rebuild a polygon keeping its exterior ring and only interior rings >= min_hole.
+    The surviving rings are the real data gaps, the point of publishing a footprint
+    at all; sliver holes below the threshold are mask noise that blows up the ring
+    count. Held apart from the part threshold: gaps are admitted much smaller than
+    the outline pieces, so showing more gaps never fragments the outline."""
     out = ogr.Geometry(ogr.wkbPolygon)
     out.AddGeometry(poly.GetGeometryRef(0).Clone())  # exterior ring
     for i in range(1, poly.GetGeometryCount()):
         ring = poly.GetGeometryRef(i)
         tmp = ogr.Geometry(ogr.wkbPolygon)
         tmp.AddGeometry(ring.Clone())
-        if tmp.GetArea() >= min_area:
+        if tmp.GetArea() >= min_hole:
             out.AddGeometry(ring.Clone())
     return out
 
 
-def _mask_footprint(ds, gt, srs, w: int, h: int) -> tuple[dict, list] | None:
+def _decimated_mask(band, w: int, h: int, k: int):
+    """Band 1's mask reduced by k in both axes: a cell is valid when >= 50% of its
+    source pixels are. Read at full resolution in row strips (k * w bytes at a time)
+    rather than with buf_xsize, because a buffered read is served from the COG
+    overviews, whose resampling marks a cell valid if *any* source pixel is and
+    dilates the footprint by up to 3x. Trailing pixels are zero-padded, so the last
+    row and column of cells need a full half-cell of data -- an edge effect well below
+    the simplify tolerance. None when the mask cannot be read."""
+    import numpy as np
+    mask = band.GetMaskBand()
+    bw, bh = -(-w // k), -(-h // k)
+    out = np.zeros((bh, bw), dtype=bool)
+    buf = np.zeros((k, bw * k), dtype=bool)
+    for row in range(bh):
+        y0 = row * k
+        strip = mask.ReadAsArray(0, y0, w, min(k, h - y0))
+        if strip is None:
+            return None
+        buf[:] = False
+        buf[:strip.shape[0], :w] = strip > 0
+        out[row] = buf.reshape(k, bw, k).mean(axis=(0, 2)) >= 0.5
+    return out
+
+
+def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dict, list] | None:
     """True data footprint from band 1's mask (nodata/alpha/internal): decimated
-    read, polygonize, simplify, reproject to WGS84. Returns (geometry, bbox) or
-    None when the raster is fully valid or the mask gives nothing usable —
-    caller keeps the bbox rectangle."""
+    read, polygonize, filter, simplify, reproject to WGS84. The interior rings are
+    the real data gaps, and are what makes this worth publishing over the bbox.
+    Returns (geometry, bbox) or None when the raster is fully valid, the mask gives
+    nothing usable, or the result covers less than _MIN_AREA_RATIO of the actual
+    valid area — caller keeps the bbox rectangle."""
     band = ds.GetRasterBand(1)
     if band.GetMaskFlags() == gdal.GMF_ALL_VALID:
         return None
-    # cap the working grid at ~1024 px; footprint is approximate by nature
-    scale = max(1.0, max(w, h) / 1024)
-    bw, bh = max(1, round(w / scale)), max(1, round(h / scale))
-    mask = band.GetMaskBand().ReadAsArray(0, 0, w, h, buf_xsize=bw, buf_ysize=bh)
-    if mask is None:
-        return None
-    valid = mask > 0
-    if valid.all() or not valid.any():
+    k = max(1, -(-max(w, h) // _FOOTPRINT_GRID))
+    valid = _decimated_mask(band, w, h, k)
+    if valid is None or valid.all() or not valid.any():
         return None  # rectangle is the truth / mask degenerate
+    bh, bw = valid.shape
 
     mem = gdal.GetDriverByName("MEM").Create("", bw, bh, 1, gdal.GDT_Byte)
-    sx, sy = w / bw, h / bh
-    mem.SetGeoTransform((gt[0], gt[1] * sx, gt[2] * sy, gt[3], gt[4] * sx, gt[5] * sy))
+    mem.SetGeoTransform((gt[0], gt[1] * k, gt[2] * k, gt[3], gt[4] * k, gt[5] * k))
     mem.GetRasterBand(1).WriteArray(valid.astype("uint8") * 255)
+    # drop speckle before polygonizing, where it is cheap: a noisy mask otherwise
+    # yields thousands of sliver polygons that every later step has to carry
+    cell_m2 = abs(gt[1] * gt[5]) * k * k
+    gdal.SieveFilter(mem.GetRasterBand(1), None, mem.GetRasterBand(1),
+                     max(1, int(min(_MIN_PART_M2, _MIN_HOLE_M2) / cell_m2)), 4)
 
     vds = ogr.GetDriverByName("Memory").CreateDataSource("")
     lyr = vds.CreateLayer("footprint", srs=srs)
-    # mask arg = the band itself, so only valid regions become polygons
+    # mask arg = the band itself, so only valid regions become polygons. Polygonize
+    # already emits one polygon per connected region with its gaps as interior rings,
+    # so the parts need no union afterwards.
     gdal.Polygonize(mem.GetRasterBand(1), mem.GetRasterBand(1), lyr, -1)
     geom = ogr.Geometry(ogr.wkbMultiPolygon)
     for feat in lyr:
         g = feat.GetGeometryRef()
-        if g is not None:
-            geom.AddGeometry(g.Clone())
+        if g is not None and g.GetArea() >= _MIN_PART_M2:
+            geom.AddGeometry(_drop_small_holes(g, _MIN_HOLE_M2))
     if geom.IsEmpty():
         return None
-    geom = geom.UnionCascaded()
-
-    # filter footprint parts
-    px = abs(gt[1]) * sx
-    min_area = (_MIN_PART_PX * px) ** 2
-    parts = ([geom] if geom.GetGeometryName() == "POLYGON"
-             else [geom.GetGeometryRef(i) for i in range(geom.GetGeometryCount())])
-    keep = ogr.Geometry(ogr.wkbMultiPolygon)
-    for part in parts:
-        if part.GetArea() >= min_area:
-            keep.AddGeometry(_drop_small_holes(part, min_area))
-    geom = keep
-    if geom.IsEmpty():
-        return None
-    geom = geom.SimplifyPreserveTopology(3 * px)
+    geom = geom.SimplifyPreserveTopology(_SIMPLIFY_M)
     if geom is None or geom.IsEmpty():
+        return None
+
+    # a footprint that lost most of the data is worse than no footprint: a sparse
+    # mask shatters into parts that all fall under _MIN_PART_M2, and the remnant
+    # would be published as the whole truth
+    exact_m2 = valid_frac * w * h * abs(gt[1] * gt[5])
+    if exact_m2 and geom.GetArea() < _MIN_AREA_RATIO * exact_m2:
+        log.warning(f"footprint covers {geom.GetArea() / exact_m2:.0%} of the valid data, "
+                    f"keeping bbox rectangle: {ds.GetDescription()}")
         return None
 
     wgs84 = osr.SpatialReference()
@@ -244,7 +275,7 @@ def _fallback_srs(crs: str, path) -> "osr.SpatialReference":
     try:
         srs.SetFromUserInput(str(crs))
     except RuntimeError as e:
-        raise ValueError(f"{path}: invalid sidecar crs {crs!r}: {e}") from e
+        raise ValueError(f"{path}: invalid sidecar crs {crs!r}: {e}\n expected: (EPSG:xxxx or WKT)") from e
     return srs
 
 
@@ -301,7 +332,8 @@ def raster(path: str, crs: str | None = None) -> AssetMeta:
 
     geometry, bbox_wgs84 = _wgs84_footprint(srs, proj_bbox)
     try:
-        fp = _mask_footprint(ds, gt, srs, w, h)
+        fp = _mask_footprint(ds, gt, srs, w, h,
+                             bands[0]["statistics"]["valid_percent"] / 100)
     except Exception as e:
         log.warning(f"footprint failed, keeping bbox rectangle ({path}): {e}")
         fp = None

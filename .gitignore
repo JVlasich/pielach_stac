@@ -22,6 +22,7 @@ catalog/
 last_run.json
 
 *CLAUDE.md
+*CONTEXT.md
 *.yaml
 *.yml
 *.txt
