@@ -1,9 +1,8 @@
 """Asset discovery and matching.
 
-Walk a campaign's product folder, classify files against the registry, probe each file's
-cloud-native status, emit one Product (= one future Item) per file,
-resolve cloud-native twins, mark tile groups, associate sidecars,
-and route anything unclassifiable through unknown_asset_policy.
+Walk a campaign folder, classify files against the registry, probe cloud-native status,
+emit one Product (= one future Item) per file, resolve cloud-native twins, mark tile
+groups, attach sidecars. Unclassifiable files go through the unknown_assets policy.
 """
 
 import logging
@@ -55,9 +54,9 @@ class Product:
     id: str            # one future Item
     category: str
     kind: str
-    assets: list[Asset]       # always length 1 today; kept a list for the Item builder
+    assets: list[Asset]       # always length 1 today; a list for the Item builder
     group: str | None = None  # tile-group name -> subcollection; None -> flat in the campaign
-    item: object = None       # pystac.Item, attached by manager (build or reuse); untyped so discover stays pystac-free
+    item: object = None       # pystac.Item, attached by manager (build/reuse); untyped so discover stays pystac-free
 
     def __str__(self) -> str:
         head = f"Product {self.id!r}  [{self.category}/{self.kind}]"
@@ -73,7 +72,7 @@ class Product:
 # --- matching ---
 
 def _match_ext(low_name: str, exts) -> str | None:
-    """The longest of a pattern's extensions that low_name ends with, else None."""
+    """Longest of a pattern's extensions that low_name ends with, else None."""
     for e in sorted(exts, key=len, reverse=True):
         if low_name.endswith(e):
             return e
@@ -81,8 +80,8 @@ def _match_ext(low_name: str, exts) -> str | None:
 
 
 def _best_match(name: str, stem_patterns):
-    """Most specific (pattern, matched_ext) for a filename, or None. Specificity = more require
-    tokens, then longer extension (so dtm_masked > dtm, .copc.laz > .laz)."""
+    """Most specific (pattern, matched_ext) for a filename, else None. Specificity = more
+    require tokens, then longer extension (so dtm_masked > dtm, .copc.laz > .laz)."""
     low = name.lower()
     candidates = []
     for label, pat in stem_patterns.items():
@@ -101,7 +100,7 @@ def _best_match(name: str, stem_patterns):
 
 
 def match(filename, stem_patterns=STEM_PATTERNS) -> str | None:
-    """The most specific registry label for a filename, or None."""
+    """Most specific registry label for a filename, else None."""
     bm = _best_match(Path(filename).name, stem_patterns)
     return bm[0] if bm else None
 
@@ -109,11 +108,10 @@ def match(filename, stem_patterns=STEM_PATTERNS) -> str | None:
 # --- cloud-native probe ---
 
 def _probe_cloud_native(path: Path, kind: str, ext: str) -> bool:
-    """Pointclouds: ext == .copc.laz
-    Rasters: GDAL reports LAYOUT=COG for COG-structured files regardless of filename
-    files it detects also get the full COG validator,
-    advisory only (structural errors warn but stay cloud-native).
-    Unreadable rasters warn and count as non-cloud-native."""
+    """Pointcloud: ext == .copc.laz.
+    Raster: GDAL reports LAYOUT=COG for COG-structured files, filename ignored. Detected
+    ones also run the full COG validator, advisory only (structural errors warn, stay
+    cloud-native). Unreadable rasters warn and count as non-cloud-native."""
     if kind == "pcl":
         return ext == ".copc.laz"
     if kind != "raster":
@@ -135,15 +133,15 @@ def _probe_cloud_native(path: Path, kind: str, ext: str) -> bool:
 # --- ids / twins / tile groups ---
 
 def _item_id(name: str, ext: str) -> str:
-    """Deterministic id: the filename's tokens minus the cog marker, original order/case,
-    so an item keeps its id when a plain raster is later converted to COG."""
+    """Deterministic id: filename tokens minus the cog marker, original order/case, so an
+    item keeps its id when a plain raster is later converted to COG."""
     tokens = name[: -len(ext)].split("_")
     return "_".join(t for t in tokens if t.lower() != "cog")
 
 
 def _twin_key(m: "_Match"):
-    """Two files are format twins when only the cog/copc marker differs
-    (dtm.tif vs dtm_cog.tif; x.laz vs x.copc.laz -- .copc is part of the matched ext)."""
+    """Format twins = only the cog/copc marker differs (dtm.tif vs dtm_cog.tif;
+    x.laz vs x.copc.laz -- .copc is part of the matched ext)."""
     tokens = frozenset(m.path.name[: -len(m.ext)].lower().split("_")) - {"cog"}
     return (m.path.parent, m.category, tokens)
 
@@ -157,19 +155,16 @@ _EXT_RANK = {".copc.laz": 2, ".laz": 1, ".las": 0}
 
 
 def _resolve_twins(matches: list["_Match"], policy: str) -> list["_Match"]:
-    """Determines how twins are handled.
-    Handles pcl and rasters at the same time. Precedent:
-        1) has cloud_native attribute (pcl & raster)
-        2) is "cog" named (raster)
-        3) format rank (.copc.laz > .laz > .las) (pcl)
-    One deterministic winner per twin bucket.
-    non-cloud-native winner goes through the non_cloud_native policy:
+    """One deterministic winner per twin bucket, pcl and raster at once. Precedence:
+        1) cloud_native (pcl & raster)
+        2) "cog" in name (raster)
+        3) format rank .copc.laz > .laz > .las (pcl)
+    Non-cloud-native winner goes through the non_cloud_native policy:
     warn = catalog + warning | skip = drop | raise.
 
-    Parameters:
-        - matches; list of matches as produced in discover()
-        - policy; 'warn' | 'skip' | 'raise'
-    Returns: list of matches"""
+    matches ; as built in discover()
+    policy ; 'warn' | 'skip' | 'raise'
+    Returns: kept matches"""
     buckets: dict = {}
     for m in matches:
         buckets.setdefault(_twin_key(m), []).append(m)
@@ -198,8 +193,8 @@ def _resolve_twins(matches: list["_Match"], policy: str) -> list["_Match"]:
 
 def _assign_tile_groups(products: list, root: Path) -> None:
     """Tiled = more than one product of a category sharing a subdir below the campaign
-    root (tac_pcl writes all tiles of one cloud into one dir). The subdir names
-    the subcollection; files at the root stay flat. Single place to change this policy."""
+    root (tac_pcl writes all tiles of one cloud into one dir). The subdir names the
+    subcollection; files at the root stay flat. Only place this policy lives."""
     buckets: dict = {}
     for p in products:
         parent = p.assets[0].path.parent
@@ -250,19 +245,17 @@ _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 def discover(folder: str | Path, policy: RunPolicy = RunPolicy(), *,
              stem_patterns=None, labels=None, id_prefix: str | None = None,
              exclude: list[str] | None = None) -> list:
-    """Discover Products under a campaign folder. Walks a folder, applies policies,
-    assigns .group (for pcl-tiles). Pass merge_overrides() output to apply per-campaign overrides.
+    """Products under a campaign folder: walk, apply policies, assign .group (pcl tiles).
+    Pass merge_overrides() output for per-campaign overrides.
 
-    Arguments:
-        - folder ; the folder to be walked
-        - policy ; RunPolicy for this run. Read here: unknown_assets (unclassifiable files)
-          and non_cloud_native (files without a cloud-native twin)
-        - stem_patterns ; which stem-patterns to look for
-        - labels ; the labels the stem-patterns point to
-        - id_prefix ; fallback for files without ISO token, guarantees unique ID
-        - exclude ; sidecar globs matched (case-insensitive) against each file's name; matches dropped
-    Returns:
-        - List of Products
+    folder ; the folder to walk
+    policy ; RunPolicy for this run. Read here: unknown_assets (unclassifiable files)
+             and non_cloud_native (files without a cloud-native twin)
+    stem_patterns ; stem-patterns to look for
+    labels ; the labels those patterns point to
+    id_prefix ; prefix for files without ISO token, keeps ids unique
+    exclude ; sidecar globs vs each file name (case-insensitive); matches dropped
+    Returns: list of Products
     """
     sp = stem_patterns if stem_patterns is not None else STEM_PATTERNS
     lb = labels if labels is not None else LABELS

@@ -18,11 +18,11 @@ log = logging.getLogger(__name__)
 
 _GPS_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
 _WEEK = 604800  # seconds
-_MAX_DEVIATION_DAYS = 14  # a derived datetime (gps or filename) beyond this from the campaign is rejected
+_MAX_DEVIATION_DAYS = 14  # derived datetime (gps or filename) further than this from the campaign is rejected
 
 
 def campaign_date(name: str) -> date:
-    """ISO date token (YYYY-MM-DD) from a campaign folder name (firm data-keeping demand)."""
+    """ISO date token (YYYY-MM-DD) out of a campaign folder name (firm data-keeping demand)."""
     m = re.search(r"\d{4}-\d{2}-\d{2}", str(name))
     if not m:
         raise ValueError(f"no ISO date token in {name!r}")
@@ -30,12 +30,11 @@ def campaign_date(name: str) -> date:
 
 
 def resolve_pc_datetime(gps_min, gps_max, campaign: date) -> tuple[datetime, datetime] | None:
-    """Raw GPSTime min/max -> (start, end) UTC. Values above one week are adjusted
-    standard GPS time (seconds since GPS epoch minus 1e9, absolute); otherwise
-    weekseconds resolved against the GPS week of the campaign date.
-    Returns:
-        - None for absent or degenerate GPSTime, caller falls back to campaign date.
-    Note: leap seconds ignored, ~18 s error irrelevant for catalog datetimes."""
+    """Raw GPSTime min/max -> (start, end) UTC. Above one week = adjusted standard GPS
+    time (seconds since GPS epoch minus 1e9, absolute); else weekseconds, resolved
+    against the GPS week of the campaign date.
+    Returns None for absent or degenerate GPSTime, caller falls back to campaign date.
+    Leap seconds ignored, ~18 s error irrelevant for catalog datetimes."""
     if gps_min is None or gps_max is None or gps_min == gps_max or gps_min < 0:
         return None
     if gps_max > _WEEK:  # adjusted standard
@@ -60,7 +59,7 @@ def resolve_pc_datetime(gps_min, gps_max, campaign: date) -> tuple[datetime, dat
             log.warning(f"gps {edge} {dt.date()} deviates >7d from campaign date {campaign}")
     return start, end
 
-# maps the random int to the opals type and in turn to the stac type
+# opals column type int -> stac schema type
 _STAC_SCHEMA_TYPE = {
     0: SchemaType.SIGNED,   2: SchemaType.SIGNED,   4: SchemaType.SIGNED,   9: SchemaType.SIGNED,   # int32/8/16/64
     1: SchemaType.UNSIGNED, 3: SchemaType.UNSIGNED, 5: SchemaType.UNSIGNED,                          # uint32/8/16
@@ -77,7 +76,7 @@ _extensions: dict[str, Callable] = {}
 
 
 def extension(name: str):
-    """Registers a populator under a registry extension key."""
+    """Register a populator under a registry extension key."""
     def deco(fn):
         _extensions[name] = fn
         return fn
@@ -126,7 +125,7 @@ def _pc_encoding(href: str) -> str:
 
 
 # statistics.count stays out: extract derives it from the mask band's mean, so a float
-# reports that estimate honestly while an integer would claim a count never taken
+# reports an estimate honestly while an integer would claim a count never taken
 # (the 1.1 Statistics Object does allow the key)
 _STAT_KEYS = ("minimum", "maximum", "mean", "stddev", "valid_percent")
 
@@ -141,8 +140,8 @@ _RASTER_V2 = "https://stac-extensions.github.io/raster/v2.0.0/schema.json"
 
 @extension("bands")
 def _populate_bands(item, pa, meta, fm) -> None:
-    """STAC 1.1 unified bands on the asset. Values equal across every band are hoisted to the
-    asset, which the bands inherit; everything but identity hoists, so a single band without
+    """STAC 1.1 unified bands on the asset. Values equal across all bands hoist to the asset
+    and the bands inherit them; everything but identity hoists, so a single band without
     identity leaves no bands array - an asset with one band is that band. The prefixed keys
     actually written decide which extensions get declared - both v2.0.0 schemas reject a
     declaration without one."""
@@ -221,7 +220,7 @@ def _round_coords(v):
 
 def _item_title(product, campaign: date) -> str:
     """Short human title for browse UIs. Tile coords when tiled, else asset label + date.
-    The registry label distinguishes variants the coarse category collapses (dtm_filled vs
+    The registry label separates variants the coarse category collapses (dtm_filled vs
     dtm_masked vs dtm). Sidecar properties (byId title) override this."""
     if product.group:  # tiled: id tail carries the tile coords (…_easting_northing)
         tail = product.id.split("_")[-2:]
@@ -232,13 +231,11 @@ def _item_title(product, campaign: date) -> str:
 
 def build_item(product, campaign: date, *, created: datetime | None = None,
                properties: dict | None = None, crs: str | None = None) -> pystac.Item:
-    """Produces and populates a Stac item from a discover::Product
-    Steps:
-        1) Run readers -> Assetmeta
-        2) Resolve datetime
-        3) Call populators to add extensions
-        4) Apply created (idempotency) and properties (sidecar)
-        5) Return pystac.Item
+    """discover::Product -> populated pystac.Item.
+        1) readers -> AssetMeta
+        2) resolve datetime
+        3) populators add extensions
+        4) apply created (idempotency) + properties (sidecar)
     """
     extracted = []
     for a in product.assets:
@@ -335,7 +332,7 @@ _SUMMARY_EXT_URI = {
 
 
 def _declare_summary_extensions(coll: Collection) -> None:
-    """Add the extension URL of every prefixed field present in the collection's summaries."""
+    """Add the extension URL of every prefixed field in the collection's summaries."""
     s = coll.summaries
     keys = set(s.lists) | set(s.ranges) | set(s.other) | set(s.schemas)
     for prefix, uri in _SUMMARY_EXT_URI.items():
@@ -367,10 +364,10 @@ _COLLECTION_META_KEYS = {"id", "title", "description", "license", "license_link"
 
 
 def build_collection(cid: str, meta: dict, items: list, children: Sequence = ()) -> Collection:
-    """Generic collection factory for campaign collections and tile subcollections.
-    Extent + curated summaries derived from items + children's items. meta keys
-    consumed: title, description, license, providers, keywords. providers accepts
-    the STAC list form or a name-keyed mapping."""
+    """Collection factory for campaign collections and tile subcollections.
+    Extent + curated summaries from items + children's items. meta keys used: title,
+    description, license, providers, keywords. providers takes the STAC list form or
+    a name-keyed mapping."""
     all_items = list(items) + [i for c in children for i in c.get_items(recursive=True)]
     if not all_items:
         raise ValueError(f"collection {cid!r} would be empty")

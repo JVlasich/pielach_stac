@@ -7,16 +7,16 @@ from pathlib import Path
 
 from ..core.log import setup
 
-# importing tac_pcl pulls in opals at module load. Decouple if
-# convert-only must run without the OPALS stack installed. but thats work
+# importing tac_pcl pulls opals in at module load. Decouple if convert-only
+# must run without the OPALS stack installed. but thats work
 from .tac_pcl import resolve_inputs, _BIN, _COPCINDEX
 
 log = logging.getLogger(__name__)
 
 
 def to_copc(infile: Path, odir: Path) -> Path:
-    """Index one LAZ to COPC in odir. lascopcindex returns nonzero on benign CRS warnings, so
-    success is judged by the output existing, not the exit code."""
+    """One LAZ -> COPC in odir. lascopcindex returns nonzero on benign CRS warnings, so
+    success is judged by the output existing, not by the exit code."""
     out = odir / f"{infile.stem}.copc.laz"
     log.debug(f"indexing {infile.name} -> {out.name}")
     subprocess.run([str(_BIN / _COPCINDEX), "-i", str(infile), "-odir", str(odir), "-progress"],

@@ -13,9 +13,9 @@ MAX_EDGE = 512  # longest thumbnail edge in px
 HS_EDGE = 1024  # render hillshade at this res, then downscale to MAX_EDGE
 
 
-@functools.lru_cache(maxsize=1) # runs function only first time its called
+@functools.lru_cache(maxsize=1)  # probed once per run
 def pcl_thumbnails_available() -> bool:
-    """True if laspy + lazrs (vendored in libs\\, win_amd64 cp310) import here."""
+    """True when laspy + lazrs (vendored in libs\\, win_amd64 cp310) import here."""
     try:
         import laspy  # noqa: F401
         import lazrs  # noqa: F401
@@ -25,9 +25,9 @@ def pcl_thumbnails_available() -> bool:
 
 
 def _data_window(band, sw: int, sh: int) -> list[int]:
-    """[xoff, yoff, xsize, ysize] bounding the valid-data pixels, so a thumbnail
-    depicts the item footprint/bbox instead of the full grid (nodata margins).
-    Full grid when the band is all-valid or the mask is unusable."""
+    """[xoff, yoff, xsize, ysize] around the valid-data pixels, so a thumbnail shows the
+    item footprint/bbox instead of the full grid (nodata margins). Full grid when the
+    band is all-valid or the mask is unusable."""
     import numpy as np
     if band.GetMaskFlags() == gdal.GMF_ALL_VALID:
         return [0, 0, sw, sh]
@@ -49,7 +49,7 @@ def _data_window(band, sw: int, sh: int) -> list[int]:
 
 def _thumb_srs(item, file_srs):
     """Source CRS for the warp. The raster file often carries none (CRS lives in the
-    sidecar), so the item's proj metadata is preferred; fall back to the file's own CRS.
+    sidecar), so the item's proj metadata wins; fall back to the file's own CRS.
     None => caller skips the warp."""
     props = getattr(item, "properties", None) or {}
     return props.get("proj:wkt2") or props.get("proj:code") or (
@@ -63,9 +63,9 @@ def _fit(cw: int, ch: int, edge: int) -> tuple[int, int]:
 
 
 def _write_png(ds, out: Path) -> None:
-    """Write ds to PNG (CreateCopy-only driver), longest edge capped at MAX_EDGE.
-    Averaged, not point-sampled: nearest here throws most of a thin corridor away
-    and aliases the relief texture, undoing whatever was rendered at HS_EDGE."""
+    """ds -> PNG (CreateCopy-only driver), longest edge capped at MAX_EDGE.
+    Averaged, not point-sampled: nearest throws most of a thin corridor away and
+    aliases the relief texture, undoing whatever was rendered at HS_EDGE."""
     ow, oh = ds.RasterXSize, ds.RasterYSize
     if max(ow, oh) > MAX_EDGE:
         s = MAX_EDGE / max(ow, oh)
@@ -80,8 +80,8 @@ def render_thumbnail(item, src_path, kind: str) -> str:
     kind: "rgb" (ortho band downscale) | "hillshade" (DSM/DTM height render)
           | "pointcloud" (COPC/LAZ top-down elevation colormap)
 
-    Raster thumbnails are warped to EPSG:4326: STAC Browser overlays the PNG onto the
-    4326 bbox as plate-carrée, so native-CRS pixels would sit stretched/rotated off the
+    Raster thumbnails warp to EPSG:4326: STAC Browser overlays the PNG onto the 4326
+    bbox as plate-carrée, so native-CRS pixels would sit stretched/rotated off the
     footprint. Source CRS comes from the item's proj metadata (the file may carry none)."""
     src = str(src_path)
     out = Path(item.get_self_href()).parent / f"{item.id}_thumbnail.png"
@@ -135,10 +135,10 @@ COARSE_N = int(4e5)  # decimation target for plain (non-COPC) laz/las
 
 
 def _coarse_xyz(src: str, resolution: float | None = None):
-    """(x, y, z) arrays, coarsely sampled. COPC reads shallow octree levels; plain laz/las strides.
+    """(x, y, z) arrays, coarsely sampled. COPC reads shallow octree levels, plain laz/las strides.
 
-    resolution: COPC query resolution in CRS units; None picks one octree node per pixel of
-    this file's own thumbnail. An aggregate over several files passes its shared, coarser value."""
+    resolution: COPC query resolution in CRS units; None = one octree node per pixel of this
+    file's own thumbnail. An aggregate over several files passes its shared, coarser value."""
     import laspy
     import numpy as np
     if src.endswith(".copc.laz"):
@@ -166,8 +166,8 @@ def _coarse_xyz(src: str, resolution: float | None = None):
 def _bin_and_save(x, y, z, out: Path, extent=None) -> str:
     """Top-down elevation colormap, max-Z per cell, longest edge MAX_EDGE, empty cells transparent.
 
-    extent: (xmin, xmax, ymin, ymax) to bin over. None derives it from the points themselves;
-    an aggregate must pass the union extent of all its sources, or the image edges follow
+    extent: (xmin, xmax, ymin, ymax) to bin over. None derives it from the points themselves.
+    An aggregate must pass the union extent of all its sources, else the image edges follow
     whatever happened to be sampled instead of the collection footprint."""
     import matplotlib.image as mpimg
     import numpy as np
@@ -203,10 +203,10 @@ def _render_pcl(src: str, out: Path) -> str:
 def render_collection_thumbnail(coll, src_paths) -> str:
     """Write <coll_dir>/<coll_id>_thumbnail.png, return its abs href.
 
-    One image for a whole tiled point-cloud subcollection: every tile is queried at the
-    collection-wide resolution and binned into a single grid over their union extent, so all
-    tiles share one color ramp. Cells no tile covers stay transparent, which is what makes the
-    tile layout readable. Unreadable tiles are warned about and dropped; none left raises."""
+    One image for a whole tiled point-cloud subcollection: every tile queried at the
+    collection-wide resolution, binned into one grid over their union extent, so all tiles
+    share one color ramp. Cells no tile covers stay transparent, which is what makes the
+    tile layout readable. Unreadable tiles warn and are dropped; none left raises."""
     import laspy
     import numpy as np
 

@@ -1,18 +1,18 @@
-"""Default Registry
+"""Default registry.
 
-Per-campaign overrides ('campaign.yaml'): 'patterns' entries replace whole
-STEM_PATTERNS entries (omitted require/forbid/extensions default to []).
-'labels' entries replace whole LABELS entries and must carry all keys
-(see _validate TODO). New patterns/labels may be defined entirely in overrides.
+Per-campaign overrides ('campaign.yaml'): a 'patterns' entry replaces a whole
+STEM_PATTERNS entry (omitted require/forbid/extensions default to []). A 'labels'
+entry replaces a whole LABELS entry and must carry every key (see _validate TODO).
+New patterns/labels can be defined entirely in overrides.
 
-override merge, validation"""
+Also here: override merge, validation."""
 
 import logging
 from typing import Any
 
 log = logging.getLogger(__name__)
 
-# stem_patterns: label -> match rule. split.("_") -> set -> match agaisnt required
+# stem_patterns: label -> match rule. stem split("_") -> set -> matched against require/forbid
 # {label: {"require": [], "forbid": [], "extensions": ""}}
 STEM_PATTERNS: dict[str, dict[str, object]] = {
     # Pointcloud variants
@@ -206,9 +206,8 @@ _LABEL_KEYS = ("category", "kind", "stac_roles", "media_type", "extensions", "th
 
 
 def merge_overrides(patterns, labels):
-    """Per-campaign overrides onto the defaults.
-    Returns merged (stem_patterns, labels) copies
-    the module globals are not mutated."""
+    """Per-campaign overrides onto the defaults. Returns merged (stem_patterns,
+    labels) copies; module globals stay unmutated."""
     sp = {k: dict(v) for k, v in STEM_PATTERNS.items()}
     sp.update(patterns or {})
 

@@ -1,7 +1,7 @@
 """Project-wide logging.
 
-Entrypoints call setup() once; every module gets its own logger via
-logging.getLogger(__name__) and just logs — no handlers, no levels.
+Entrypoints call setup() once; every module takes its own logger via
+logging.getLogger(__name__) and logs — no handlers, no levels.
 OPALS modules derive their log levels from the root logger via opals_log().
 """
 
@@ -45,10 +45,10 @@ def setup(level: str = "info") -> None:
 
 
 def opals_log(mod) -> None:
-    """Apply the project logging policy to an OPALS module or workflow.
+    """Project logging policy onto an OPALS module or workflow.
 
-    Screen level derives from the root logger: debug -> opals info,
-    none -> opals none, everything else -> opals error.
+    Screen level from the root logger: debug -> opals info, none -> opals none,
+    everything else -> opals error.
     """
     import opals
 

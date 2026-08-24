@@ -1,8 +1,10 @@
 """render_thumbnail: PNG output, longest edge capped at 512, no upscale."""
 
+from pathlib import Path
+
 from osgeo import gdal
 
-from stac.catalog.thumbnail import render_thumbnail, MAX_EDGE
+from stac.catalog.thumbnail import render_collection_thumbnail, render_thumbnail, MAX_EDGE
 
 gdal.UseExceptions()
 
@@ -14,6 +16,16 @@ class _Item:
         self.id = id
         self.properties = properties or {}
         self.bbox = bbox
+
+    def get_self_href(self):
+        return self._href
+
+
+class _Collection:
+    """Minimal stand-in: render_collection_thumbnail reads .id and .get_self_href()."""
+    def __init__(self, href, id):
+        self._href = str(href)
+        self.id = id
 
     def get_self_href(self):
         return self._href
@@ -181,20 +193,8 @@ def test_masked_dem_corridor_survives_hillshade(tmp_path):
     assert lit > 2000
 
 
-def _las(path, n=800):
-    import laspy
-    import numpy as np
-    rng = np.random.default_rng(0)
-    x = np.concatenate([rng.uniform(0, 100, n), [0.0, 100.0, 0.0, 100.0]])  # corners pin the extent
-    y = np.concatenate([rng.uniform(0, 50, n), [0.0, 0.0, 50.0, 50.0]])
-    z = np.concatenate([rng.uniform(0, 10, n), [0.0, 0.0, 0.0, 0.0]])
-    las = laspy.LasData(laspy.LasHeader(point_format=3))
-    las.x, las.y, las.z = x, y, z
-    las.write(str(path))
-
-
-def test_pointcloud(tmp_path):
-    _las(tmp_path / "pc.las")
+def test_pointcloud(tmp_path, write_las):
+    write_las(tmp_path / "pc.las")
     item = _Item(tmp_path / "item" / "item.json", "pc")
     href = render_thumbnail(item, tmp_path / "pc.las", "pointcloud")
 
@@ -203,3 +203,78 @@ def test_pointcloud(tmp_path):
     assert drv == "PNG"
     assert max(w, h) == MAX_EDGE          # capped
     assert (w, h) == (512, 256)           # extent 100x50 -> x longer
+
+
+# L-shaped staircase of 100 x 50 tiles: the left column above y=50 stays uncovered, so the
+# union is 200 x 150 while every single tile is 100 x 50 (2:1) - the aspect tells them apart.
+_STAIRCASE = [(0, 0), (100, 0), (100, 50), (100, 100)]
+
+
+def _staircase(write_las, tmp_path, suffix=".las"):
+    # dense enough that every bin of the union grid gets a point: a tile spans 256 x 128 cells
+    # there, and the sparse default would render as speckle rather than as a filled tile
+    paths = []
+    for i, (dx, dy) in enumerate(_STAIRCASE):
+        p = tmp_path / f"tile_{i}{suffix}"
+        write_las(p, n=100_000, dx=dx, dy=dy)
+        paths.append(p)
+    return paths
+
+
+def test_collection_thumbnail_binned_over_union_extent(tmp_path, write_las):
+    import numpy as np
+    srcs = _staircase(write_las, tmp_path)
+    coll = _Collection(tmp_path / "coll" / "collection.json", "tiles")
+    href = render_collection_thumbnail(coll, srcs)
+
+    assert href.endswith("tiles_thumbnail.png")
+    drv, w, h = _open(href)
+    assert drv == "PNG"
+    assert max(w, h) == MAX_EDGE
+    assert (w, h) == (512, 384)           # union 200x150, not a tile's own 100x50
+
+    # the uncovered quarter stays transparent: no tile covers x<100 above y=50, which is the
+    # left half of the upper two thirds (origin lower => high y is the top row)
+    ds = gdal.Open(href)
+    assert ds.RasterCount == 4            # RGBA, matplotlib writes NaN cells transparent
+    alpha = ds.GetRasterBand(4).ReadAsArray()
+    ds = None
+    assert alpha[100, 100] == 0           # empty cell
+    assert alpha[300, 100] > 0            # same column, inside tile (0, 0)
+    assert np.all(alpha[:200, :200] == 0)
+
+
+def test_collection_thumbnail_copc(tmp_path, write_las):
+    # laspy has no COPC writer, so index real .laz tiles with the shipped tool
+    import subprocess
+
+    import pytest
+    binary = Path(__file__).resolve().parents[1] / "stac" / "bin" / "lascopcindex64"
+    if not binary.exists():
+        pytest.skip("lascopcindex64 not shipped for this platform")
+
+    copc = tmp_path / "copc"
+    copc.mkdir()
+    for src in _staircase(write_las, tmp_path, suffix=".laz"):
+        subprocess.run([str(binary), "-i", str(src), "-odir", str(copc)], check=True)
+    srcs = sorted(copc.glob("*.copc.laz"))
+    assert len(srcs) == len(_STAIRCASE)
+
+    coll = _Collection(tmp_path / "coll" / "collection.json", "tiles")
+    href = render_collection_thumbnail(coll, srcs)
+
+    drv, w, h = _open(href)
+    assert drv == "PNG"
+    assert (w, h) == (512, 384)           # same union extent through the octree query path
+
+
+def test_collection_thumbnail_skips_unreadable_source(tmp_path, write_las, caplog):
+    srcs = _staircase(write_las, tmp_path)
+    broken = tmp_path / "tile_broken.las"
+    broken.write_bytes(b"not a las file")
+    coll = _Collection(tmp_path / "coll" / "collection.json", "tiles")
+    href = render_collection_thumbnail(coll, srcs + [broken])
+
+    _, w, h = _open(href)
+    assert (w, h) == (512, 384)           # broken tile dropped, the rest still render
+    assert "tile_broken.las" in caplog.text

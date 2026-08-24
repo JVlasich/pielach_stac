@@ -3,6 +3,7 @@ import shutil
 from pathlib import Path
 
 import pystac
+import pytest
 
 from stac.catalog.manager import update_catalog
 from stac.catalog.policy import RunPolicy
@@ -47,6 +48,24 @@ def test_failed_item_isolated(tmp_path, write_tif, write_tif_no_crs):
     assert res["ok"]["2021-02-02"] == {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 1}, res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
     assert cat.get_child("pielach_2021-02-02") is None
+
+
+def test_catalog_validates_against_stac_schemas(tmp_path, write_tif, write_rgb_tif):
+    """The whole point of the pipeline: what it writes must pass the STAC 1.1 schemas,
+    the declared extensions included (multi-band ortho pulls in eo + raster v2.0.0)."""
+    pytest.importorskip("jsonschema")
+    out = tmp_path / "catalog"
+    camp = tmp_path / "2023-02-08"
+    camp.mkdir()
+    write_tif(camp / "pielach_2023-02-08_dtm_etrs89.tif", 10)
+    write_rgb_tif(camp / "pielach_2023-02-08_transparent_mosaic_cog.tif")
+    (camp / "campaign.yaml").write_text("", encoding="utf-8")
+
+    res = update_catalog(tmp_path, out, RunPolicy(validate=True))
+    verdict = res["validation"]
+    if any(m in verdict for m in ("urlopen", "getaddrinfo", "Max retries", "name resolution")):
+        pytest.skip(f"STAC schemas unreachable: {verdict}")
+    assert verdict == "ok", verdict
 
 
 def test_subcollection_id_not_doubled_and_asset_href_modes(tmp_path, write_tif):
@@ -145,9 +164,10 @@ def test_root_promoted_to_collection(tmp_path, write_tif, monkeypatch):
     assert root.extent.spatial.bboxes[0] and root.extent.temporal.intervals[0]
 
 
-def test_update_catalog_staged_idempotency(tmp_path, write_tif):
+def test_update_catalog_staged_idempotency(tmp_path, write_tif, monkeypatch):
     """One sequential story: build -> reuse -> content change -> stale ->
     dry-run -> force -> subcollection stale -> duplicate id -> vanished campaign."""
+    monkeypatch.chdir(tmp_path)   # the run report lands in cwd; keep it out of the repo
     out = tmp_path / "catalog"
     camp_dir = tmp_path / "2023-02-08_test"
     (camp_dir / "pielach_2023-02-08_tiles").mkdir(parents=True)
@@ -275,3 +295,82 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif):
     assert not res["failed"] and res["stale_collections"] == ["pielach_2023-02-08"], res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
     assert cat.get_child("pielach_2023-02-08") is None
+
+
+def _coll_asset_href(out: Path, coll_id: str, key: str) -> str:
+    """The on-disk href of a collection-level asset."""
+    cj = next(p for p in out.rglob("collection.json") if p.parent.name == coll_id)
+    return json.loads(cj.read_text(encoding="utf-8"))["assets"][key]["href"]
+
+
+def test_tiled_pcl_subcollection_thumbnail(tmp_path, write_las, monkeypatch):
+    """One aggregate thumbnail per tiled point-cloud subcollection: rendered on the first run,
+    re-rendered only when a member changes, re-attached on every run."""
+    from datetime import datetime, timezone
+
+    import stac.catalog.manager as mgr
+    from stac.catalog.discover import Asset, Product
+    from stac.catalog.extract import file_meta
+
+    camp = tmp_path / "2024-10-09"
+    tiles = camp / "pielach_2024-10-09_tiles"
+    tiles.mkdir(parents=True)
+    (camp / "campaign.yaml").write_text("", encoding="utf-8")
+    for i, (dx, dy) in enumerate([(0, 0), (100, 0), (100, 50)]):   # L-shaped, one empty cell
+        write_las(tiles / f"pielach_2024-10-09_pcl_{i}.las", n=20_000, dx=dx, dy=dy)
+
+    # pcl item builds need opals; mock discover/build_item/pcl_point_count, the thumbnail
+    # path itself is real and reads the real tiles
+    def _prod(path):
+        a = Asset(path=path, label="pointcloud_copc", category="pointcloud", kind="pcl",
+                  stac_roles=["data"], media_type="application/vnd.laszip+copc",
+                  extensions=[], cloud_native=True, thumbnail=True)
+        return Product(id=path.stem, category="pointcloud", kind="pcl", assets=[a],
+                       group="pielach_2024-10-09_tiles")
+
+    monkeypatch.setattr(mgr, "discover",
+                        lambda folder, policy, **kw: [_prod(p) for p in sorted(tiles.glob("*.las"))])
+    monkeypatch.setattr(mgr, "pcl_point_count", lambda path: 20_000)
+
+    def _fake_item(product, campaign, **kw):
+        a = product.assets[0]
+        fm = file_meta(a.path)   # the idempotency gate reads file:size / file:checksum back off this
+        item = pystac.Item(id=product.id, geometry={"type": "Point", "coordinates": [15.4, 48.2]},
+                           bbox=[15.4, 48.2, 15.4, 48.2],
+                           datetime=datetime(2024, 10, 9, tzinfo=timezone.utc), properties={})
+        item.add_asset(a.label, pystac.Asset(
+            href=str(a.path), roles=["data"],
+            extra_fields={"file:size": fm.size, "file:checksum": "1220" + fm.sha256}))
+        return item
+
+    monkeypatch.setattr(mgr, "build_item", _fake_item)
+
+    out = tmp_path / "catalog"
+    thumb = "./pielach_2024-10-09_tiles_thumbnail.png"
+
+    update_catalog(tmp_path, out, RunPolicy())
+    png = next(out.rglob("pielach_2024-10-09_tiles_thumbnail.png"))
+    assert _coll_asset_href(out, "pielach_2024-10-09_tiles", "thumbnail") == thumb
+    stamp = png.stat().st_mtime_ns
+
+    # nothing changed: no re-render, but the asset survives (collections are rebuilt from scratch)
+    update_catalog(tmp_path, out, RunPolicy())
+    assert png.stat().st_mtime_ns == stamp
+    assert _coll_asset_href(out, "pielach_2024-10-09_tiles", "thumbnail") == thumb
+
+    # a member's content changes -> re-render
+    write_las(tiles / "pielach_2024-10-09_pcl_0.las", n=20_001)
+    res = update_catalog(tmp_path, out, RunPolicy())
+    assert res["ok"]["2024-10-09"]["rebuilt"] == 1
+    assert png.stat().st_mtime_ns != stamp
+    stamp = png.stat().st_mtime_ns
+
+    # the member set moves -> re-render
+    (tiles / "pielach_2024-10-09_pcl_2.las").unlink()
+    update_catalog(tmp_path, out, RunPolicy(stale="remove"))
+    assert png.stat().st_mtime_ns != stamp
+    assert _coll_asset_href(out, "pielach_2024-10-09_tiles", "thumbnail") == thumb
+
+    # relative href mode: the collection thumbnail still resolves next to its collection.json
+    update_catalog(tmp_path, out, RunPolicy(stale="remove", asset_hrefs="relative"))
+    assert _coll_asset_href(out, "pielach_2024-10-09_tiles", "thumbnail") == thumb

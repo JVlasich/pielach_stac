@@ -1,9 +1,9 @@
-"""RunPolicy: the run-wide knobs, built once from config and passed down unchanged.
+"""RunPolicy: run-wide knobs, built once from config, passed down unchanged.
 
 One default per field, declared here. `CATALOG_DEFAULTS` derives the config template from
 `config_defaults()`; `cli.main` builds the instance with `from_config()` and hands the same
 object to update_catalog -> process_campaign -> discover. Root metadata (id/title/license/
-providers) and the OPALS options stay out: they are not per-run policy.
+providers) and the OPALS options stay out: not per-run policy.
 """
 
 from dataclasses import dataclass, fields
@@ -58,7 +58,7 @@ class RunPolicy:
 
     @classmethod
     def from_config(cls, cfg: dict) -> "RunPolicy":
-        """Build from a resolved config section (defaults < file < CLI).
+        """From a resolved config section (defaults < file < CLI).
         Keys absent from cfg keep the field default."""
         return cls(**{attr: cfg[key] for key, attr in _FIELD_MAP.items() if key in cfg})
 

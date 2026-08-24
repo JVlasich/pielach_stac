@@ -1,7 +1,7 @@
 """
-Convert and Tile Raster:
-Converts GeoTIFFs to COG. Files larger than minTileSize (GB) are tiled into
-COG tiles instead of a single COG. Each input produces its own output.
+Convert and tile raster:
+GeoTIFF -> COG. Inputs above minTileSize (GB) become COG tiles instead of one COG.
+Each input produces its own output.
 
 Usage:
     python tac_raster.py --infile file.tif [--config config.yaml] [--outdir dir]
@@ -51,7 +51,7 @@ def cog_creation_options(cfg: dict) -> list:
 
 
 def convert_to_cog(infile: Path, out_path: Path, cfg: dict) -> bool:
-    """Convert a whole raster to a single COG. Returns False if skipped."""
+    """Whole raster -> one COG. False when skipped."""
     if cfg["skipIfExists"] and out_path.exists():
         log.info(f"COG exists, skipping: {out_path.name}")
         return False
@@ -65,7 +65,7 @@ def convert_to_cog(infile: Path, out_path: Path, cfg: dict) -> bool:
 
 
 def tile_to_cog(infile: Path, tiles_dir: Path, cfg: dict) -> tuple:
-    """Window a raster into COG tiles. Empty (all-nodata) tiles are skipped.
+    """Window a raster into COG tiles, empty (all-nodata) tiles skipped.
     Returns (written, skipped)."""
     tile_size = cfg["tileSize"]
     creation_options = cog_creation_options(cfg)
@@ -84,8 +84,8 @@ def tile_to_cog(infile: Path, tiles_dir: Path, cfg: dict) -> tuple:
 
             out_path = tiles_dir / f"{infile.stem}_{xoff}_{yoff}.tif"
             
-            # skipped files are never written so mask is read again to check if theyre really empty
-            # possible solution: write a .empty file that marks empty tiles that werent written
+            # empty tiles are never written, so the mask is re-read every run to recheck them
+            # possible fix: write a .empty marker for the skipped-empty tiles
             if cfg["skipIfExists"] and out_path.exists():
                 log.debug(f"Tile exists, skipping: {out_path.name}")
                 skipped += 1
@@ -189,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def process_one(infile: Path | str, cfg: dict, inputs_count: int) -> None:
-    """Convert one input. Tiles if it exceeds minTileSize, else single COG."""
+    """One input: tiles when above minTileSize, else a single COG."""
     infile = Path(infile)
     if not infile.is_file():
         raise FileNotFoundError(f"Input file not found: {infile}")

@@ -1,9 +1,9 @@
-"""Generate one template config YAML holding all tool namespaces.
+"""One template config YAML holding every tool namespace.
 
 Usage:
     python -m stac.utils.gen_full_template [out.yaml]
 
-Requires the full env (opals + gdal + pystac), since tool modules import at top level.
+Needs the full env (opals + gdal + pystac): tool modules import at top level.
 """
 
 import sys
@@ -15,7 +15,7 @@ from ..catalog.manager import CATALOG_DEFAULTS as CAT_DEFAULTS
 from ..pre.tac_pcl import DEFAULTS as PCL_DEFAULTS
 from ..pre.tac_raster import DEFAULTS as RASTER_DEFAULTS
 
-# namespace strings live as locals in each tool's main(), duplicated here on purpose
+# namespace strings are locals in each tool's main(), duplicated here on purpose
 SECTIONS = {
     "catalog": CAT_DEFAULTS,
     "tile_and_convert_pcl": PCL_DEFAULTS,

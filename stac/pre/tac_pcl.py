@@ -1,6 +1,6 @@
 """
-Tile and Convert Pointcloud:
-Tiles a LAZ file using OPALS and converts tiles to COPC format.
+Tile and convert pointcloud:
+Tiles a LAZ file with OPALS, converts the tiles to COPC.
 
 Usage:
     python tile_and_convert.py --infile file.laz [--config config.yaml] [--outdir dir]
@@ -112,9 +112,9 @@ def read_las_bbox(path: Path) -> tuple[float, float, float, float]:
 def group_tiles(tiles: list, threshold: float) -> list:
     """Merge tiles below threshold (bytes) into edge-adjacent neighbors.
 
-    tiles: (name, size, (col, row)) per tile. Returns groups as lists of names,
-    largest member first (it names the merged output). Deterministic: smallest
-    runt merges first, into its smallest adjacent group; name breaks ties.
+    tiles: (name, size, (col, row)) per tile. Returns groups as name lists, largest
+    member first (it names the merged output). Deterministic: smallest runt merges
+    first, into its smallest adjacent group; name breaks ties.
     """
     groups = [{"members": [(name, size)], "cells": {cell}, "size": size}
               for name, size, cell in sorted(tiles)]
@@ -142,7 +142,7 @@ def group_tiles(tiles: list, threshold: float) -> list:
 
 def plan_tile_groups(tile_tmp: Path, point_origin: str, tile_size: float, merge_below: float) -> list:
     """Scan cut tiles, group runts (< mergeBelow MB) with their grid neighbors.
-    Returns groups as lists of LAZ paths, largest first."""
+    Returns groups as LAZ path lists, largest first."""
     ox, oy = (float(v) for v in point_origin.split(";"))
     tiles = []
     for laz in sorted(tile_tmp.glob("*.laz")):
@@ -181,8 +181,8 @@ def warn_stale(groups: list, outdir: Path):
 
 
 def convert_groups(groups: list, tile_tmp: Path, odir: Path):
-    """Convert tile groups to COPC in odir. Singletons batch through one -lof call,
-    merged groups get one -merged call each. Existing outputs are skipped."""
+    """Tile groups -> COPC in odir. Singletons batch through one -lof call, merged
+    groups get one -merged call each. Existing outputs skipped."""
     singles = [g[0] for g in groups
                if len(g) == 1 and not (odir / _copc_name(g[0])).exists()]
     merged = [g for g in groups
@@ -322,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def process_one(infile: Path | str, cfg: dict, outdir: Path | str, tmp_root: Path | str) -> Path:
-    """Run the full tile+convert pipeline for one input. Returns the produced ODM path."""
+    """Full tile+convert pipeline for one input. Returns the produced ODM path."""
     infile, outdir, tmp_root = Path(infile), Path(outdir), Path(tmp_root)
     work = tmp_root / infile.stem          # per-input work dir isolates odm, grid and tiles
     tile_tmp = work / "tiles"

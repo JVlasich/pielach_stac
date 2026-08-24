@@ -1,8 +1,6 @@
 # type: ignore
-"""Two decorator-registries: Reader and Populator
-
-Readers return asset metadata
-Extensions map metadata to Extension fields (build.py)"""
+"""Reader registry: readers return asset metadata.
+Populators (build.py) map that metadata onto STAC extension fields."""
 
 import hashlib
 import json
@@ -28,9 +26,9 @@ log = logging.getLogger(__name__)
 # set by cli after config merge; nbThreads None = opals default (all CPUs)
 OPALS_INFO = {"nbThreads": None, "exactComputation": True}
 
-# footprint tuning. All in ground units, so every item is filtered the same way
-# regardless of its pixel count (a pixel-derived threshold makes a gap survive in one
-# campaign and vanish in the next, purely because the grids differ in size).
+# footprint tuning. Ground units throughout, so every item filters the same regardless
+# of pixel count (a pixel-derived threshold makes a gap survive in one campaign and
+# vanish in the next, purely because the grids differ in size).
 _FOOTPRINT_GRID = 2048    # px, longest edge of the working grid
 _MIN_PART_M2    = 4000.0  # footprint parts below this are mask noise
 _MIN_HOLE_M2    = 1000.0  # interior gaps below this are not represented
@@ -40,10 +38,8 @@ _MIN_AREA_RATIO = 0.5     # footprint below this share of the valid area -> bbox
 
 @dataclass
 class AssetMeta:
-    """Dataclass that holds all possible asset metadata.
-    extractors will build their extension from these
-
-    To be expanded for the other extensions"""
+    """Every piece of asset metadata a reader can produce; populators build their
+    extension from these. Expand as more extensions land."""
     # Pointcloud
     pc_count:      int                 | None = None
     pc_type:       str                 | None = None
@@ -127,18 +123,18 @@ class FileMeta:
 
 
 def _dtype_name(gdal_type: int) -> str:
-    """GDAL data type name to raster extension string (Byte -> uint8, Float32 -> float32)."""
+    """GDAL data type name -> raster extension string (Byte -> uint8, Float32 -> float32)."""
     name = gdal.GetDataTypeName(gdal_type)
     return "uint8" if name == "Byte" else name.lower()
 
 
 def _finite(v):
-    """Non-finite floats to None, item JSON must stay parseable (NaN is invalid JSON)."""
+    """Non-finite float -> None, item JSON must stay parseable (NaN is invalid JSON)."""
     return None if isinstance(v, float) and not math.isfinite(v) else v
 
 
 def _json_nodata(v):
-    """Non-finite nodata to the raster extension's string forms ("nan", "inf", "-inf")."""
+    """Non-finite nodata -> the raster extension's string forms ("nan", "inf", "-inf")."""
     if isinstance(v, float) and math.isnan(v):
         return "nan"
     if isinstance(v, float) and math.isinf(v):
@@ -147,7 +143,7 @@ def _json_nodata(v):
 
 
 def _wgs84_footprint(srs, proj_bbox: list) -> tuple[dict, list]:
-    """Native CRS bbox -> WGS84 (GeoJSON polygon, bbox) via densified edge transform,
+    """Native CRS bbox -> WGS84 (GeoJSON polygon, bbox) via densified edge transform:
     bundled GDAL 3.1 has no TransformBounds (3.4+)."""
     wgs84 = osr.SpatialReference()
     wgs84.ImportFromEPSG(4326)
@@ -168,11 +164,11 @@ def _wgs84_footprint(srs, proj_bbox: list) -> tuple[dict, list]:
 
 
 def _drop_small_holes(poly, min_hole: float):
-    """Rebuild a polygon keeping its exterior ring and only interior rings >= min_hole.
-    The surviving rings are the real data gaps, the point of publishing a footprint
-    at all; sliver holes below the threshold are mask noise that blows up the ring
-    count. Held apart from the part threshold: gaps are admitted much smaller than
-    the outline pieces, so showing more gaps never fragments the outline."""
+    """Rebuild a polygon: exterior ring plus only interior rings >= min_hole. Survivors
+    are the real data gaps, the whole point of publishing a footprint; slivers below the
+    threshold are mask noise that blows up the ring count. Held apart from the part
+    threshold: gaps are admitted much smaller than the outline pieces, so showing more
+    gaps never fragments the outline."""
     out = ogr.Geometry(ogr.wkbPolygon)
     out.AddGeometry(poly.GetGeometryRef(0).Clone())  # exterior ring
     for i in range(1, poly.GetGeometryCount()):
@@ -185,13 +181,12 @@ def _drop_small_holes(poly, min_hole: float):
 
 
 def _decimated_mask(band, w: int, h: int, k: int):
-    """Band 1's mask reduced by k in both axes: a cell is valid when >= 50% of its
-    source pixels are. Read at full resolution in row strips (k * w bytes at a time)
-    rather than with buf_xsize, because a buffered read is served from the COG
-    overviews, whose resampling marks a cell valid if *any* source pixel is and
-    dilates the footprint by up to 3x. Trailing pixels are zero-padded, so the last
-    row and column of cells need a full half-cell of data -- an edge effect well below
-    the simplify tolerance. None when the mask cannot be read."""
+    """Band 1's mask reduced by k on both axes: a cell is valid when >= 50% of its source
+    pixels are. Read at full resolution in row strips (k * w bytes at a time), not via
+    buf_xsize: a buffered read comes from the COG overviews, whose resampling marks a cell
+    valid if *any* source pixel is and dilates the footprint by up to 3x. Trailing pixels
+    zero-pad, so the last row and column of cells need a full half-cell of data -- an edge
+    effect well below the simplify tolerance. None when the mask cannot be read."""
     import numpy as np
     mask = band.GetMaskBand()
     bw, bh = -(-w // k), -(-h // k)
@@ -209,12 +204,12 @@ def _decimated_mask(band, w: int, h: int, k: int):
 
 
 def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dict, list] | None:
-    """True data footprint from band 1's mask (nodata/alpha/internal): decimated
-    read, polygonize, filter, simplify, reproject to WGS84. The interior rings are
-    the real data gaps, and are what makes this worth publishing over the bbox.
-    Returns (geometry, bbox) or None when the raster is fully valid, the mask gives
-    nothing usable, or the result covers less than _MIN_AREA_RATIO of the actual
-    valid area — caller keeps the bbox rectangle."""
+    """True data footprint from band 1's mask (nodata/alpha/internal): decimated read,
+    polygonize, filter, simplify, reproject to WGS84. The interior rings are the real
+    data gaps, what makes this worth publishing over the bbox.
+    Returns (geometry, bbox), or None when the raster is fully valid, the mask gives
+    nothing usable, or the result covers less than _MIN_AREA_RATIO of the actual valid
+    area — caller keeps the bbox rectangle."""
     band = ds.GetRasterBand(1)
     if band.GetMaskFlags() == gdal.GMF_ALL_VALID:
         return None
@@ -227,8 +222,8 @@ def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dic
     mem = gdal.GetDriverByName("MEM").Create("", bw, bh, 1, gdal.GDT_Byte)
     mem.SetGeoTransform((gt[0], gt[1] * k, gt[2] * k, gt[3], gt[4] * k, gt[5] * k))
     mem.GetRasterBand(1).WriteArray(valid.astype("uint8") * 255)
-    # drop speckle before polygonizing, where it is cheap: a noisy mask otherwise
-    # yields thousands of sliver polygons that every later step has to carry
+    # drop speckle before polygonizing, where it is cheap: a noisy mask otherwise yields
+    # thousands of sliver polygons every later step has to carry
     cell_m2 = abs(gt[1] * gt[5]) * k * k
     gdal.SieveFilter(mem.GetRasterBand(1), None, mem.GetRasterBand(1),
                      max(1, int(min(_MIN_PART_M2, _MIN_HOLE_M2) / cell_m2)), 4)
@@ -236,8 +231,8 @@ def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dic
     vds = ogr.GetDriverByName("Memory").CreateDataSource("")
     lyr = vds.CreateLayer("footprint", srs=srs)
     # mask arg = the band itself, so only valid regions become polygons. Polygonize
-    # already emits one polygon per connected region with its gaps as interior rings,
-    # so the parts need no union afterwards.
+    # already emits one polygon per connected region, gaps as interior rings: the
+    # parts need no union afterwards.
     gdal.Polygonize(mem.GetRasterBand(1), mem.GetRasterBand(1), lyr, -1)
     geom = ogr.Geometry(ogr.wkbMultiPolygon)
     for feat in lyr:
@@ -250,9 +245,9 @@ def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dic
     if geom is None or geom.IsEmpty():
         return None
 
-    # a footprint that lost most of the data is worse than no footprint: a sparse
-    # mask shatters into parts that all fall under _MIN_PART_M2, and the remnant
-    # would be published as the whole truth
+    # a footprint that lost most of the data is worse than none: a sparse mask shatters
+    # into parts that all fall under _MIN_PART_M2, and the remnant would be published
+    # as the whole truth
     exact_m2 = valid_frac * w * h * abs(gt[1] * gt[5])
     if exact_m2 and geom.GetArea() < _MIN_AREA_RATIO * exact_m2:
         log.warning(f"footprint covers {geom.GetArea() / exact_m2:.0%} of the valid data, "
@@ -268,8 +263,8 @@ def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dic
 
 
 def _fallback_srs(crs: str, path) -> "osr.SpatialReference":
-    """Sidecar crs string (EPSG:xxxx or WKT) -> SpatialReference. Used only
-    when the file itself carries no CRS."""
+    """Sidecar crs string (EPSG:xxxx or WKT) -> SpatialReference. Only when the file
+    itself carries no CRS."""
     log.warning(f"no CRS in file, using sidecar crs {crs!r}: {path}")
     srs = osr.SpatialReference()
     try:
@@ -280,12 +275,12 @@ def _fallback_srs(crs: str, path) -> "osr.SpatialReference":
 
 
 def raster(path: str, crs: str | None = None) -> AssetMeta:
-    """Extracts relevant raster metadata using GDAL.
-    Item datetime is campaign-driven and not read here; TIFFTAG_DATETIME is kept
-    only as the processing timestamp. Band statistics are exact (full scan).
+    """Raster metadata via GDAL.
+    Item datetime is campaign-driven, not read here; TIFFTAG_DATETIME is kept only as
+    the processing timestamp. Band statistics are exact (full scan).
     geometry = mask-derived footprint, bbox rectangle fallback.
     crs = sidecar fallback, only consulted when the file has none.
-    returns: AssetMeta object"""
+    Returns: AssetMeta"""
     log.debug(f"extracting raster metadata: {path}")
     ds = gdal.Open(str(path))
 
@@ -366,18 +361,18 @@ def raster(path: str, crs: str | None = None) -> AssetMeta:
 
 
 def _attr_name(a) -> str:
-    """getName() returns "Shortname (Longname)"; the longname disambiguates dims
-    that share a shortname (e.g. two Amplitudes). Whole string when no parens."""
+    """getName() returns "Shortname (Longname)"; the longname separates dims sharing a
+    shortname (e.g. two Amplitudes). Whole string when no parens."""
     full = a.getName()
     m = re.search(r"\((.*)\)\s*$", full)
     return m.group(1) if m else full
 
 
 def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
-    """Extracts relevant pointcloud metadata using opalsInfo.
-    Attributes are only extracted if they have more than one possible value.
+    """Pointcloud metadata via opalsInfo.
+    Attributes only extracted when they carry more than one value.
     crs = sidecar fallback, only consulted when the file has none.
-    returns: AssetMeta object"""
+    Returns: AssetMeta"""
     log.debug(f"extracting pointcloud metadata: {path}")
     inf = Info.Info()
     inf.inFile = str(path)
@@ -462,9 +457,8 @@ def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
 
 
 def file_meta(p: Path | str) -> FileMeta:
-    """Reads File Metadata to compare against existing assets.
-    Used in idempotency pipeline to reduce runtime
-    by only calling other readers if changes are detected"""
+    """File metadata for comparing against cataloged assets. The idempotency gate uses
+    it to call the other readers only on change."""
     # checks
     p = Path(p)
     if not (p.exists() and p.is_file()):
@@ -490,9 +484,9 @@ def file_meta(p: Path | str) -> FileMeta:
 
 
 def pcl_point_count(p: Path | str) -> int:
-    """Point count from the LAS public header, uncompressed in .las/.laz/.copc.laz
-    alike (no point decompression, ~7 ms). Lets the minPoints filter drop degenerate
-    tiles before the expensive opals build."""
+    """Point count from the LAS public header, uncompressed in .las/.laz/.copc.laz alike
+    (no point decompression, ~7 ms). Lets minPoints drop degenerate tiles before the
+    expensive opals build."""
     import laspy
     with laspy.open(str(p)) as r:
         return r.header.point_count

@@ -1,10 +1,12 @@
 import logging
+import subprocess
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
-from stac.catalog.build import (_GPS_EPOCH, build_collection, build_item,
-                                campaign_date, resolve_pc_datetime)
+from stac.catalog.build import (_EO_V2, _GPS_EPOCH, _RASTER_V2, build_collection,
+                                build_item, campaign_date, resolve_pc_datetime)
 from stac.catalog.discover import discover
 
 CAMP = date(2023, 2, 8)
@@ -62,7 +64,9 @@ def test_build_item_and_collection(tmp_path, write_tif):
         assert data_asset.extra_fields["file:checksum"].startswith("1220")
         props = item.properties
         assert props.get("proj:code") or props.get("proj:wkt2"), "no projection populated"
-        assert data_asset.extra_fields["raster:bands"], "no raster bands"
+        # single band: everything hoisted to the asset, no bands array (STAC 1.1)
+        assert data_asset.extra_fields["data_type"], "no band data_type"
+        assert "bands" not in data_asset.extra_fields
         assert item.datetime == datetime.combine(CAMP, datetime.min.time(), tzinfo=timezone.utc)
         assert props["gsd"] == 25
         assert props["created"] and props["updated"]
@@ -116,8 +120,12 @@ def test_build_item_coords_rounded(tmp_path, write_tif):
             for c in v:
                 yield from leaves(c)
 
-    coords = list(leaves(item.geometry["coordinates"])) + list(item.bbox)
-    assert coords and all(v == round(v, 7) for v in coords)
+    geom = list(leaves(item.geometry["coordinates"]))
+    assert geom and all(v == round(v, 7) for v in geom + list(item.bbox))
+    # ...rounded to 7, not coarser: the 7th decimal (~1 cm) still carries signal.
+    # geometry and bbox are rounded at separate call sites, so check both
+    assert any(v != round(v, 6) for v in geom)
+    assert any(v != round(v, 6) for v in item.bbox)
 
 
 def test_pc_datetime_end_outlier_rejected(caplog):
@@ -193,3 +201,105 @@ def test_item_title_uses_variant_label(tmp_path, write_tif):
     write_tif(tmp_path / "pielach_2023-02-08_dtm_filled.tif", 10)
     item = build_item(discover(tmp_path)[0], CAMP)
     assert item.properties["title"] == "dtm filled 2023-02-08"
+
+
+def test_pc_datetime_deviation_window_is_two_weeks(caplog):
+    # the window is two weeks, not "somewhere far away": day 14 is kept, day 15 rejected.
+    # The days are spelled out on purpose - deriving them from _MAX_DEVIATION_DAYS would
+    # make the test move with the constant instead of pinning it
+    midnight = datetime.combine(CAMP, datetime.min.time(), tzinfo=timezone.utc)
+    start = _adjusted_gps(midnight)
+
+    inside = midnight + timedelta(days=14)
+    span = resolve_pc_datetime(start, _adjusted_gps(inside), CAMP)
+    assert span is not None and span[1] == inside, "day 14 must be kept"
+
+    with caplog.at_level(logging.WARNING):
+        assert resolve_pc_datetime(start, _adjusted_gps(midnight + timedelta(days=15)),
+                                   CAMP) is None
+    assert any("rejected" in r.getMessage() for r in caplog.records)
+
+
+def test_build_item_filename_token_window_is_two_weeks(tmp_path, write_tif):
+    # same window on the filename-token path (a raster carries no GPS time)
+    for days, expected in ((14, CAMP + timedelta(days=14)), (15, CAMP)):
+        token = CAMP + timedelta(days=days)
+        d = tmp_path / token.isoformat()
+        d.mkdir()
+        write_tif(d / f"pielach_{token.isoformat()}_dtm_etrs89.tif", 10)
+        item = build_item(discover(d)[0], CAMP)
+        assert item.datetime.date() == expected, f"{days} days off"
+
+
+def test_build_item_multiband_hoists_only_shared_values(tmp_path, write_rgb_tif):
+    """Per-band values must stay per band; only values equal across every band hoist to the
+    asset. Identity (name / eo:common_name) never hoists."""
+    write_rgb_tif(tmp_path / "pielach_2023-02-08_transparent_mosaic_cog.tif")
+    item = build_item(discover(tmp_path)[0], CAMP)
+    asset = item.assets["orthophoto"]
+    bands = asset.extra_fields["bands"]
+
+    assert len(bands) == 3
+    assert [b["name"] for b in bands] == ["red", "green", "blue"]
+    assert [b["eo:common_name"] for b in bands] == ["red", "green", "blue"]
+    # statistics differ per band (fills are 40 / 80 / 120) -> stay per band, never folded
+    assert [b["statistics"]["mean"] for b in bands] == [40.0, 80.0, 120.0]
+    assert "statistics" not in asset.extra_fields
+    # data_type and nodata are equal across the bands -> hoisted once, dropped from every band
+    assert asset.extra_fields["data_type"] == "uint8"
+    assert asset.extra_fields["nodata"] == 0.0
+    assert all("data_type" not in b and "nodata" not in b for b in bands)
+    # the prefixed keys actually written decide the declarations
+    assert _EO_V2 in item.stac_extensions and _RASTER_V2 in item.stac_extensions
+    assert "eo:bands" not in asset.extra_fields and "raster:bands" not in asset.extra_fields
+
+
+def test_collection_summary_range_spans_both_gsds(tmp_path, write_tif):
+    # two resolutions in one campaign: the range must span them, not collapse to one value
+    write_tif(tmp_path / "pielach_2023-02-08_dtm_etrs89.tif", 10, px=25)
+    write_tif(tmp_path / "pielach_2023-02-08_dsm_etrs89.tif", 20, px=50)
+    items = [build_item(p, CAMP) for p in discover(tmp_path)]
+    coll = build_collection("c", {"title": "t"}, items)
+    assert coll.to_dict()["summaries"]["gsd"] == {"minimum": 25, "maximum": 50}
+
+
+def test_build_item_pointcloud(tmp_path, write_las):
+    """Full pcl path through opals: pc:* fields, projection off the sidecar CRS, and the
+    GPS-derived acquisition window on the item."""
+    # weekseconds: 3 days into the GPS week that starts Sun 2023-02-05 -> the campaign day
+    write_las(tmp_path / "pielach_2023-02-08_ground.las", gps=(3 * 86400, 3 * 86400 + 3600))
+    product = discover(tmp_path)[0]
+    item = build_item(product, CAMP, crs="EPSG:31256")
+
+    assert item.datetime == datetime(2023, 2, 8, tzinfo=timezone.utc)
+    assert item.common_metadata.start_datetime == datetime(2023, 2, 8, tzinfo=timezone.utc)
+    assert item.common_metadata.end_datetime == datetime(2023, 2, 8, 1, tzinfo=timezone.utc)
+
+    props = item.properties
+    assert props["pc:count"] == 804 and props["pc:type"] == "lidar"
+    assert props["pc:encoding"] == "las"
+    assert props["proj:code"] == "EPSG:31256"
+    gps_schema = next(s for s in props["pc:schemas"] if s["name"] == "GPSTime")
+    assert (gps_schema["type"], gps_schema["size"]) == ("floating", 8)
+    # constant dimensions carry no signal and stay out of the statistics
+    assert [s["name"] for s in props["pc:statistics"]] == ["GPSTime"]
+
+    asset = item.assets["pointcloud_las"]
+    assert asset.media_type == "application/vnd.las"
+    assert asset.extra_fields["file:checksum"].startswith("1220")
+
+
+def test_build_item_pointcloud_copc_encoding(tmp_path, write_las):
+    # laspy has no COPC writer, so index a real .laz tile with the shipped tool
+    binary = Path(__file__).resolve().parents[1] / "stac" / "bin" / "lascopcindex64"
+    if not binary.exists():
+        pytest.skip("lascopcindex64 not shipped for this platform")
+    src = tmp_path / "pielach_2023-02-08_ground.laz"
+    write_las(src, gps=(3 * 86400, 3 * 86400 + 3600))
+    copc = tmp_path / "copc"
+    copc.mkdir()
+    subprocess.run([str(binary), "-i", str(src), "-odir", str(copc)], check=True)
+
+    item = build_item(discover(copc)[0], CAMP, crs="EPSG:31256")
+    assert item.properties["pc:encoding"] == "copc"
+    assert item.assets["pointcloud_copc"].media_type == "application/vnd.laszip+copc"

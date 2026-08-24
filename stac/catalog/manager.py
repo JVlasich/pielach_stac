@@ -29,7 +29,7 @@ CATALOG_DEFAULTS = {
     # resolved in cli.py
     "root": None,
     "out": None,             # default: <root>/catalog
-    # the defaults policies live on RunPolicy (policy.py)
+    # policy defaults live on RunPolicy (policy.py)
     **RunPolicy.config_defaults(),
     "nbThreads": None,       # opals thread count, None = opals default (all CPUs)
     "exactComputation": True,# exact point statistics (full scan) vs header-only (fast, no stats)
@@ -42,7 +42,7 @@ config.register_defaults("catalog", CATALOG_DEFAULTS)
 
 
 def load_sidecar(path) -> dict:
-    """Read a per-campaign sidecar YAML into a dict
+    """Per-campaign sidecar YAML -> dict
     (collection / patterns / labels / hierarchy / properties blocks / crs fallback)."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
@@ -54,7 +54,7 @@ def _register_id(seen: dict | None, new_id: str, kind: str, source: str, policy:
     """One id namespace per run (root/collections/subcollections/items).
     Collision: warn keeps the first owner, raise fails the campaign. Collection ids
     always raise: the second campaign replaces the first one's collection in the root,
-    so warn cannot keep the first owner, it merges two campaigns into one collection."""
+    so warn cannot keep the first owner - it merges two campaigns into one collection."""
     if seen is None:
         return
     if new_id in seen:
@@ -70,7 +70,7 @@ def _register_id(seen: dict | None, new_id: str, kind: str, source: str, policy:
 # --- idempotency gate ---
 
 def _stored_file_fields(item, label: str):
-    """Returns: (file:size, sha256-hex) stored on the item's data asset, or None."""
+    """(file:size, sha256-hex) stored on the item's data asset, else None."""
     a = item.assets.get(label)
     if a is None:
         return None
@@ -84,9 +84,9 @@ def _stored_file_fields(item, label: str):
 def _needs_rebuild(product, existing_item) -> bool:
     """Size shortcut, then sha256 confirm. A computed hash rides on the asset so
     build_item never hashes twice.
-    Note: gates the first asset only, products are single-asset today. The gate hashes
-    only the data asset, so a hand-deleted co-located thumbnail or sidecar leaves a
-    dangling href until the next --force run."""
+    Gates the first asset only (products are single-asset today), and only the data
+    asset: a hand-deleted co-located thumbnail or sidecar leaves a dangling href until
+    the next --force run."""
     a = product.assets[0]
     stored = _stored_file_fields(existing_item, a.label)
     if stored is None:
@@ -103,11 +103,11 @@ def _needs_rebuild(product, existing_item) -> bool:
 def _queue_coll_thumb(sub, node, rebuilt_ids: set, parent_of: dict, jobs: list) -> None:
     """Queue one aggregate thumbnail for a tiled point-cloud subcollection.
 
-    Only point-cloud members carrying the registry thumbnail flag are rendered, so plain
-    LAS/LAZ stays opt-in (a full read); a partial cover is warned about. The job carries a
-    changed flag - any member rebuilt, or the member set moved - because collections are
-    rebuilt unconditionally every run and would otherwise re-render every campaign every time.
-    The PNG-exists half of the gate waits for the drain: hrefs are undefined until normalize."""
+    Only point-cloud members carrying the registry thumbnail flag render, so plain LAS/LAZ
+    stays opt-in (a full read); partial cover warns. The job carries a changed flag - any
+    member rebuilt, or the member set moved - because collections are rebuilt every run
+    unconditionally and would otherwise re-render every campaign every time. The
+    PNG-exists half of the gate waits for the drain: hrefs are undefined until normalize."""
     pcl = [p for p in node.products if p.assets[0].kind == "pcl"]
     flagged = [p for p in pcl if p.assets[0].thumbnail]
     if not flagged:
@@ -116,8 +116,8 @@ def _queue_coll_thumb(sub, node, rebuilt_ids: set, parent_of: dict, jobs: list) 
         skipped = sorted(p.id for p in pcl if p not in flagged)
         log.warning(f"{sub.id} thumbnail covers {len(flagged)}/{len(pcl)} tiles, "
                     f"no registry thumbnail flag on: {skipped}")
-    # stale clones count as members: they are in the collection, and comparing without them
-    # would report a change on every run for as long as one is kept
+    # stale clones count as members: they sit in the collection, and comparing without
+    # them would report a change every run for as long as one is kept
     ids = {i.id for i in sub.get_items()}
     was = {i for i, par in parent_of.items() if par == sub.id}
     changed = bool(rebuilt_ids & ids) or ids != was
@@ -133,19 +133,16 @@ def process_campaign(
 
     """Build or refresh one campaign collection on the root catalog.
 
-    Item build failures (unreadable CRS, reader errors) drop only that item;
-    the rest of the campaign still builds. A previously cataloged version of a
-    failed item follows the stale policy.
+    An item build failure (unreadable CRS, reader error) drops only that item, the rest
+    of the campaign still builds. A previously cataloged version of a failed item
+    follows the stale policy.
 
-    Arguments:
-        - folder ; path to the campaign folder
-        - policy ; RunPolicy for this run
-        - seen_ids ; {id: (kind, source)} passed in update_catalog() and mutated inplace
-    Returns:
-        {"rebuilt": n, "reused": n, "stale": n, "failed": n}
-    Exceptions:
-        - missing campaign.yaml
-        - item/subcollection id collisions when policy.id_collisions == "raise", collection ids always
+    folder ; path to the campaign folder
+    policy ; RunPolicy for this run
+    seen_ids ; {id: (kind, source)} from update_catalog(), mutated in place
+    Returns: {"rebuilt": n, "reused": n, "stale": n, "failed": n}
+    Raises: missing campaign.yaml; item/subcollection id collision when
+    policy.id_collisions == "raise", collection id collision always
     """
     folder = Path(folder)
 
@@ -189,8 +186,8 @@ def process_campaign(
         if iid not in item_ids:
             log.warning(f"properties.byId matches no item id: {iid}")
 
-    # Drop pcl tiles with VERY few points (configurable) use laspy header read.
-    # previously cataloged is removed not kept stale
+    # drop pcl tiles with VERY few points (configurable), laspy header read.
+    # a previously cataloged one is removed, not kept stale
     if policy.min_points:
         kept = []
         for p in products:
@@ -314,7 +311,7 @@ def _root_providers(cfg) -> list:
 
 
 def _union_extent(children) -> pystac.Extent:
-    """Aggregate spatial bbox + temporal interval over the child collections."""
+    """Spatial bbox + temporal interval aggregated over the child collections."""
     bboxes = [c.extent.spatial.bboxes[0] for c in children if c.extent.spatial.bboxes]
     if bboxes:
         sp = pystac.SpatialExtent([[min(b[0] for b in bboxes), min(b[1] for b in bboxes),
@@ -329,9 +326,9 @@ def _union_extent(children) -> pystac.Extent:
 
 
 def _load_or_create_root(out_dir: Path) -> pystac.Catalog:
-    """Load or create the root. With both license and providers configured the root is a
-    Collection (union extent set after the campaign loop); otherwise a bare Catalog. A change
-    of root type across runs migrates the existing children over."""
+    """Load or create the root. With license and providers both configured the root is a
+    Collection (union extent set after the campaign loop), else a bare Catalog. A root
+    type change across runs migrates the existing children over."""
     cat_json = out_dir / "catalog.json"
     cfg = config.section("catalog")
     promote = bool(cfg["license"] and cfg["providers"])
@@ -372,7 +369,7 @@ def _load_or_create_root(out_dir: Path) -> pystac.Catalog:
 
 
 class _WarnCollector(logging.Handler):
-    """Captures warnings records during a run so they land in last_run.json."""
+    """Collects warning records during a run so they land in last_run.json."""
 
     def __init__(self):
         super().__init__(logging.WARNING)
@@ -387,21 +384,17 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
     """Re-run the whole catalog over a processed-datasets root (idempotent).
     Campaign dirs = direct subdirs with an ISO date token; failures are isolated.
 
-    Collections without a campaign
-    dir on disk follow the stale policy. The sweep acts only on clean runs:
-    while any campaign failed its collection id is unknown, so flagged
-    collections are kept with a warning regardless of policy.
+    Collections with no campaign dir on disk follow the stale policy. The sweep acts
+    only on clean runs: while any campaign failed its collection id is unknown, so
+    flagged collections are kept with a warning regardless of policy.
 
-    Arguments:
-        - root ; Path to be scanned for subfolders
-        - out_dir ; Path to write the finished catalog to
-        - policy ; RunPolicy for this run, passed unchanged to every campaign
+    root ; Path scanned for campaign subfolders
+    out_dir ; Path the finished catalog is written to
+    policy ; RunPolicy for this run, passed unchanged to every campaign
 
-    Returns:
-        {"ok": {campaign: counts}, "failed": {campaign: error},
-        "stale_collections": [ids], "validation": None | "ok" | error};
-
-        and written to ./last_run.json (working directory)."""
+    Returns: {"ok": {campaign: counts}, "failed": {campaign: error},
+    "stale_collections": [ids], "validation": None | "ok" | error};
+    also written to ./last_run.json (working directory)."""
     root, out_dir = Path(root), Path(out_dir)
     cat = _load_or_create_root(out_dir)
 
@@ -464,7 +457,7 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
             if isinstance(cat, pystac.Collection):
                 cat.set_self_href(str(out_dir / "catalog.json"))  # stable root entry point (not collection.json)
             if policy.thumbnails:
-                # thumb creation for pcl -> make sure laspy can load
+                # pcl thumbnails need laspy
                 pcl_ok = pcl_thumbnails_available()
                 if not pcl_ok and (coll_thumb_jobs
                                    or any(k == "pointcloud" for *_, k in thumb_jobs)):
@@ -517,8 +510,8 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
 
 
 def _write_report(res: dict, **knobs) -> None:
-    """Machine-readable run report in the working directory, overwritten each run
-    (dry runs included). Out of the catalog tree so crawlers ignore the non-STAC file."""
+    """Machine-readable run report in the working directory, overwritten each run (dry
+    runs included). Outside the catalog tree so crawlers ignore the non-STAC file."""
     report = {"timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"), **knobs, **res}
     path = Path.cwd() / "last_run.json"
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -526,7 +519,7 @@ def _write_report(res: dict, **knobs) -> None:
 
 
 def _validate_catalog(root) -> str:
-    """root.validate_all() guarded for the optional pystac[validation] extra.
+    """root.validate_all(), guarded for the optional pystac[validation] extra.
     Returns "ok" or the error string (logged either way)."""
     try:
         import pystac.validation  # noqa: F401 jsonschema presence check

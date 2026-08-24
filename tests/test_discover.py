@@ -142,6 +142,19 @@ def test_skip_policy_is_old_cloud_native_only_rule(discovered):
     assert all(a.cloud_native for p in skipped for a in p.assets)
 
 
+def test_probed_cn_beats_cog_named_non_cog(tmp_path):
+    # the cog token is human convention, the probe decides: a real COG without the token
+    # supersedes its cog-named plain-GTiff twin, not the other way round
+    _write_raster(tmp_path / "pielach_2023-02-08_dtm_etrs89.tif", cog=True)
+    _write_raster(tmp_path / "pielach_2023-02-08_dtm_etrs89_cog.tif", cog=False)
+
+    products = discover(tmp_path)
+    assert len(products) == 1, [p.assets[0].path.name for p in products]
+    kept = products[0].assets[0]
+    assert kept.path.name == "pielach_2023-02-08_dtm_etrs89.tif"
+    assert kept.cloud_native and kept.media_type == COG_MEDIA_TYPE
+
+
 def test_exclude_glob_drops_named_file(tmp_path):
     (tmp_path / "pielach_2023-02-08_524000_534000.copc.laz").touch()  # tile, kept
     (tmp_path / "pielach_2023-02-08.laz").touch()                     # mono full cloud, excluded
