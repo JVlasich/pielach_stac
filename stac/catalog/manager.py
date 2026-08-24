@@ -4,6 +4,7 @@ import fnmatch
 import json
 import logging
 from datetime import datetime, timezone
+from itertools import chain
 from pathlib import Path
 
 import pystac
@@ -16,7 +17,8 @@ from .discover import discover
 from .extract import file_meta, pcl_point_count
 from .hierarchy import resolve_hierarchy
 from .policy import RunPolicy
-from .thumbnail import pcl_thumbnails_available, render_thumbnail
+from .thumbnail import (pcl_thumbnails_available, render_collection_thumbnail,
+                        render_thumbnail)
 
 log = logging.getLogger(__name__)
 
@@ -98,10 +100,35 @@ def _needs_rebuild(product, existing_item) -> bool:
 
 # --- per-campaign pipeline ---
 
+def _queue_coll_thumb(sub, node, rebuilt_ids: set, parent_of: dict, jobs: list) -> None:
+    """Queue one aggregate thumbnail for a tiled point-cloud subcollection.
+
+    Only point-cloud members carrying the registry thumbnail flag are rendered, so plain
+    LAS/LAZ stays opt-in (a full read); a partial cover is warned about. The job carries a
+    changed flag - any member rebuilt, or the member set moved - because collections are
+    rebuilt unconditionally every run and would otherwise re-render every campaign every time.
+    The PNG-exists half of the gate waits for the drain: hrefs are undefined until normalize."""
+    pcl = [p for p in node.products if p.assets[0].kind == "pcl"]
+    flagged = [p for p in pcl if p.assets[0].thumbnail]
+    if not flagged:
+        return
+    if len(flagged) < len(pcl):
+        skipped = sorted(p.id for p in pcl if p not in flagged)
+        log.warning(f"{sub.id} thumbnail covers {len(flagged)}/{len(pcl)} tiles, "
+                    f"no registry thumbnail flag on: {skipped}")
+    # stale clones count as members: they are in the collection, and comparing without them
+    # would report a change on every run for as long as one is kept
+    ids = {i.id for i in sub.get_items()}
+    was = {i for i, par in parent_of.items() if par == sub.id}
+    changed = bool(rebuilt_ids & ids) or ids != was
+    jobs.append((sub, [p.assets[0].path for p in flagged], changed))
+
+
 def process_campaign(
     folder, root, policy: RunPolicy, *, # positional
     seen_ids: dict | None = None,
-    thumb_jobs: list | None = None
+    thumb_jobs: list | None = None,
+    coll_thumb_jobs: list | None = None
 ) -> dict:
 
     """Build or refresh one campaign collection on the root catalog.
@@ -185,6 +212,7 @@ def process_campaign(
             return {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 0}
 
     rebuilt = reused = 0
+    rebuilt_ids: set[str] = set()   # feeds the subcollection thumbnail gate below
     failed_items = []
     for p in products:
         prev = existing.get(p.id)
@@ -210,6 +238,7 @@ def process_campaign(
                 elif a0.kind == "pcl":
                     thumb_jobs.append((p.item, a0.path, "pointcloud"))
         rebuilt += 1
+        rebuilt_ids.add(p.id)
 
     if failed_items:
         products = [p for p in products if p not in failed_items]
@@ -254,7 +283,10 @@ def process_campaign(
                 "providers": camp_meta.get("providers"),
                 "keywords": camp_meta.get("keywords")}
         items = [p.item for p in node.products] + stale_clones.pop(sub_id, [])
-        children.append(build_collection(sub_id, meta, items))
+        sub = build_collection(sub_id, meta, items)
+        children.append(sub)
+        if policy.thumbnails and coll_thumb_jobs is not None:
+            _queue_coll_thumb(sub, node, rebuilt_ids, parent_of, coll_thumb_jobs)
 
     flat_items = [p.item for p in nodes[0].products] + stale_clones.pop(camp_id, [])
 
@@ -381,6 +413,8 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
         seen_ids: dict = {cat.id: ("catalog", "root")}
         # (item, src_path, kind) for rebuilt raster items, rendered after normalize
         thumb_jobs: list = []
+        # (collection, [tile paths], changed) for tiled point-cloud subcollections
+        coll_thumb_jobs: list = []
         for d in sorted(root.iterdir()):
             if not d.is_dir() or d.resolve() == out_dir.resolve():
                 continue
@@ -395,7 +429,8 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
             log.info(f"\033[96m=== {d.name} ===\033[00m")
             try:
                 ok[d.name] = process_campaign(
-                    d, cat, policy, seen_ids=seen_ids, thumb_jobs=thumb_jobs)
+                    d, cat, policy, seen_ids=seen_ids, thumb_jobs=thumb_jobs,
+                    coll_thumb_jobs=coll_thumb_jobs)
             except Exception as e:
                 log.exception(f"FAILED: {d.name}")
                 failed[d.name] = str(e)
@@ -431,7 +466,8 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
             if policy.thumbnails:
                 # thumb creation for pcl -> make sure laspy can load
                 pcl_ok = pcl_thumbnails_available()
-                if not pcl_ok and any(k == "pointcloud" for *_, k in thumb_jobs):
+                if not pcl_ok and (coll_thumb_jobs
+                                   or any(k == "pointcloud" for *_, k in thumb_jobs)):
                     log.warning("laspy/lazrs unavailable; skipping point-cloud thumbnails")
                 for item, src, kind in thumb_jobs:
                     if kind == "pointcloud" and not pcl_ok:
@@ -442,14 +478,26 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
                             href=href, media_type="image/png", roles=["thumbnail"]))
                     except Exception as e:
                         log.warning(f"thumbnail failed for {item.id}: {e}")
+                for coll, srcs, changed in (coll_thumb_jobs if pcl_ok else []):
+                    png = Path(coll.get_self_href()).parent / f"{coll.id}_thumbnail.png"
+                    try:
+                        if changed or policy.force or not png.exists():
+                            render_collection_thumbnail(coll, srcs)
+                        # unlike items, collections are rebuilt from scratch every run and
+                        # carry no assets forward: attach on the skip path too
+                        coll.add_asset("thumbnail", pystac.Asset(
+                            href=png.resolve().as_posix(), media_type="image/png",
+                            roles=["thumbnail"]))
+                    except Exception as e:
+                        log.warning(f"thumbnail failed for {coll.id}: {e}")
             if policy.asset_hrefs == "relative":
                 cat.make_all_asset_hrefs_relative()
             # thumbnails live inside the catalog tree: always relative, both href modes
-            for item in cat.get_items(recursive=True):
-                for asset in item.assets.values():
+            for obj in chain(cat.get_items(recursive=True), cat.get_all_collections()):
+                for asset in obj.assets.values():
                     if "thumbnail" in (asset.roles or []):
                         asset.href = pystac.utils.make_relative_href(
-                            asset.get_absolute_href(), item.get_self_href())
+                            asset.get_absolute_href(), obj.get_self_href())
             cat.save(catalog_type=pystac.CatalogType.SELF_CONTAINED)
             log.info(f"catalog saved: {out_dir}")
             if policy.validate:

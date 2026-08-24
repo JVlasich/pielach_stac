@@ -309,7 +309,7 @@ def raster(path: str, crs: str | None = None) -> AssetMeta:
         else:
             # mask mean / 255 assumes binary mask, partial alpha skews valid_percent
             frac = b.GetMaskBand().ComputeStatistics(False)[2] / 255.0
-            valid_percent, count = frac * 100, round(frac * w * h)
+            valid_percent, count = round(frac * 100, 4), round(frac * w * h)
         nbits = b.GetMetadataItem("NBITS", "IMAGE_STRUCTURE")
         bands.append({
             "index":        i,

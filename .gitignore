@@ -8,6 +8,7 @@ env_linux/
 bachelor.code-workspace
 notebooks/
 catalog/
+docs/
 
 **/__pycache__
 **/.claude
@@ -19,6 +20,7 @@ catalog/
 **/*.odm
 **/.pytest_cache
 **/*.png
+**/*.md
 last_run.json
 
 *CLAUDE.md
@@ -30,3 +32,4 @@ last_run.json
 !sample_configs/**/*.yaml
 !config.yaml
 !stac/catalog
+!README.md

@@ -115,13 +115,13 @@ LABELS: dict[str, dict[str, Any]] = {
         "thumbnail":  False,
     },
 
-    # orthophoto: RGB orthomosaic, primary deliverable -> data + visual; eo for bands
+    # orthophoto: RGB orthomosaic, primary deliverable -> data + visual; eo comes off color interp
     "orthophoto": {
         "category":   "orthophoto",
         "kind":       "raster",
         "stac_roles": ["data", "visual"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["eo", "raster", "projection", "file"],
+        "extensions": ["bands", "projection", "file"],
         "thumbnail":  True,
     },
 
@@ -131,7 +131,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["raster", "projection", "file"],
+        "extensions": ["bands", "projection", "file"],
         "thumbnail":  True,
     },
     "dtm_filled": {
@@ -139,7 +139,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["raster", "projection", "file"],
+        "extensions": ["bands", "projection", "file"],
         "thumbnail":  True,
     },
     "dtm_masked": {
@@ -147,7 +147,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["raster", "projection", "file"],
+        "extensions": ["bands", "projection", "file"],
         "thumbnail":  True,
     },
 
@@ -157,7 +157,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["raster", "projection", "file"],
+        "extensions": ["bands", "projection", "file"],
         "thumbnail":  True,
     },
     "dsm_filled": {
@@ -165,7 +165,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["raster", "projection", "file"],
+        "extensions": ["bands", "projection", "file"],
         "thumbnail":  True,
     },
     "dsm_masked": {
@@ -173,7 +173,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["raster", "projection", "file"],
+        "extensions": ["bands", "projection", "file"],
         "thumbnail":  True,
     },
 

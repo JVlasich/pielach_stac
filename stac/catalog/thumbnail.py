@@ -134,18 +134,26 @@ def render_thumbnail(item, src_path, kind: str) -> str:
 COARSE_N = int(4e5)  # decimation target for plain (non-COPC) laz/las
 
 
-def _coarse_xyz(src: str):
-    """(x, y, z) arrays, coarsely sampled. COPC reads shallow octree levels; plain laz/las strides."""
+def _coarse_xyz(src: str, resolution: float | None = None):
+    """(x, y, z) arrays, coarsely sampled. COPC reads shallow octree levels; plain laz/las strides.
+
+    resolution: COPC query resolution in CRS units; None picks one octree node per pixel of
+    this file's own thumbnail. An aggregate over several files passes its shared, coarser value."""
     import laspy
     import numpy as np
     if src.endswith(".copc.laz"):
         with laspy.CopcReader.open(src) as r:
-            h = r.header
-            span = max(h.maxs[0] - h.mins[0], h.maxs[1] - h.mins[1])
-            pts = r.query(resolution=span / MAX_EDGE)  # ~one octree node per thumbnail pixel
+            if resolution is None:
+                h = r.header
+                span = max(h.maxs[0] - h.mins[0], h.maxs[1] - h.mins[1])
+                resolution = span / MAX_EDGE  # ~one octree node per thumbnail pixel
+            pts = r.query(resolution=resolution)
         return np.asarray(pts.x), np.asarray(pts.y), np.asarray(pts.z)
-    # plain LAZ/LAS has no spatial index (COPC is the fast norm); stride chunks, bounded memory
-    with laspy.open(src) as f:
+    # plain LAZ/LAS has no spatial index (COPC is the fast norm); stride chunks, bounded memory.
+    # base() is xy_returns_channel and carries no Z, hence the explicit decompress_z; the whole
+    # selection is ignored for LAS < 1.4 / point format < 6.
+    sel = laspy.DecompressionSelection.base().decompress_z()
+    with laspy.open(src, decompression_selection=sel) as f:
         step = max(1, f.header.point_count // COARSE_N)
         xs, ys, zs = [], [], []
         for pts in f.chunk_iterator(3_000_000):
@@ -155,20 +163,27 @@ def _coarse_xyz(src: str):
     return np.concatenate(xs), np.concatenate(ys), np.concatenate(zs)
 
 
-def _render_pcl(src: str, out: Path) -> str:
-    """Top-down elevation colormap, max-Z per cell, longest edge MAX_EDGE, empty cells transparent."""
+def _bin_and_save(x, y, z, out: Path, extent=None) -> str:
+    """Top-down elevation colormap, max-Z per cell, longest edge MAX_EDGE, empty cells transparent.
+
+    extent: (xmin, xmax, ymin, ymax) to bin over. None derives it from the points themselves;
+    an aggregate must pass the union extent of all its sources, or the image edges follow
+    whatever happened to be sampled instead of the collection footprint."""
     import matplotlib.image as mpimg
     import numpy as np
     from scipy import ndimage
     from scipy.stats import binned_statistic_2d
 
-    x, y, z = _coarse_xyz(src)
-    ex, ey = np.ptp(x), np.ptp(y)
+    if extent is None:
+        ex, ey, rng = np.ptp(x), np.ptp(y), None
+    else:
+        ex, ey = extent[1] - extent[0], extent[3] - extent[2]
+        rng = [[extent[0], extent[1]], [extent[2], extent[3]]]
     if ex >= ey:
         w, h = MAX_EDGE, (max(1, round(MAX_EDGE * ey / ex)) if ex else 1)
     else:
         w, h = (max(1, round(MAX_EDGE * ex / ey)) if ey else 1), MAX_EDGE
-    grid, *_ = binned_statistic_2d(x, y, z, statistic="max", bins=[w, h])  # nan = empty cell
+    grid, *_ = binned_statistic_2d(x, y, z, statistic="max", bins=[w, h], range=rng)  # nan = empty
     # nearest-fill small holes, keep real voids transparent
     nan = np.isnan(grid)
     dist, (ix, iy) = ndimage.distance_transform_edt(nan, return_indices=True)
@@ -180,14 +195,75 @@ def _render_pcl(src: str, out: Path) -> str:
     return out.resolve().as_posix()
 
 
+def _render_pcl(src: str, out: Path) -> str:
+    """One point cloud, binned over its own extent."""
+    return _bin_and_save(*_coarse_xyz(src), out)
+
+
+def render_collection_thumbnail(coll, src_paths) -> str:
+    """Write <coll_dir>/<coll_id>_thumbnail.png, return its abs href.
+
+    One image for a whole tiled point-cloud subcollection: every tile is queried at the
+    collection-wide resolution and binned into a single grid over their union extent, so all
+    tiles share one color ramp. Cells no tile covers stay transparent, which is what makes the
+    tile layout readable. Unreadable tiles are warned about and dropped; none left raises."""
+    import laspy
+    import numpy as np
+
+    out = Path(coll.get_self_href()).parent / f"{coll.id}_thumbnail.png"
+    out.parent.mkdir(parents=True, exist_ok=True)  # save() has not created the collection dir yet
+
+    srcs, mins, maxs = [], [], []
+    for p in src_paths:
+        s = str(p)
+        try:
+            with laspy.open(s) as f:  # header only, nothing decompressed
+                mins.append(f.header.mins)
+                maxs.append(f.header.maxs)
+                srcs.append((s, f.header.point_count))
+        except Exception as e:
+            log.warning(f"header unreadable, tile dropped from {coll.id} thumbnail: {Path(s).name} ({e})")
+    if not srcs:
+        raise ValueError("no readable source")
+    lo, hi = np.min(mins, axis=0), np.max(maxs, axis=0)
+    extent = (lo[0], hi[0], lo[1], hi[1])
+    res = max(extent[1] - extent[0], extent[3] - extent[2]) / MAX_EDGE
+
+    xs, ys, zs = [], [], []
+    for s, npts in srcs:
+        if not s.endswith(".copc.laz"):
+            # no COPC octree to query shallowly, and a chunk seek lands on one flight-line
+            # segment rather than a spread sample: the whole file gets read
+            log.warning(f"no COPC index, full {npts}-point read for {coll.id} thumbnail: {Path(s).name}")
+        try:
+            x, y, z = _coarse_xyz(s, resolution=res)
+        except Exception as e:
+            log.warning(f"read failed, tile dropped from {coll.id} thumbnail: {Path(s).name} ({e})")
+            continue
+        xs.append(x)
+        ys.append(y)
+        zs.append(z)
+    if not xs:
+        raise ValueError("every source failed to read")
+    return _bin_and_save(np.concatenate(xs), np.concatenate(ys), np.concatenate(zs),
+                         out, extent=extent)
+
+
 if __name__ == "__main__":
-    # self-check: python -m stac.catalog.thumbnail <src> [<dest dir>]
+    # self-check: python -m stac.catalog.thumbnail <src> [<src> ...] [<dest dir>]
+    # several sources render one aggregate collection thumbnail instead
     import sys
     from types import SimpleNamespace
     import time
 
-    src = Path(sys.argv[1]).resolve()
-    dst = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else Path.cwd()
+    args = [Path(a).resolve() for a in sys.argv[1:]]
+    dst = args.pop() if len(args) > 1 and args[-1].is_dir() else Path.cwd()
+    if len(args) > 1:
+        coll = SimpleNamespace(id=dst.name, get_self_href=lambda: str(dst / "collection.json"))
+        start = time.time()
+        print(render_collection_thumbnail(coll, args), f" ({round(time.time()-start,1)}s)")
+        sys.exit()
+    src = args[0]
     if src.name.endswith((".las", ".laz")):
         kind = "pointcloud"
     else:

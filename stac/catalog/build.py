@@ -6,19 +6,15 @@ from typing import Callable, Sequence
 
 import pystac
 from pystac import Collection, Extent, Provider, Summaries
-from pystac.extensions.eo import EOExtension
 from pystac.extensions.file import FileExtension
 from pystac.extensions.pointcloud import PointcloudExtension, Schema, SchemaType, Statistic
 from pystac.extensions.projection import ProjectionExtension
-from pystac.extensions.raster import RasterExtension
 
 from ..core.registry import SIDECAR_EXTENSIONS
 from .extract import _readers
 
 import logging
 log = logging.getLogger(__name__)
-
-# TODO thumbnails
 
 _GPS_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
 _WEEK = 604800  # seconds
@@ -72,7 +68,7 @@ _STAC_SCHEMA_TYPE = {
     11: SchemaType.UNSIGNED # bool is technically an uint
 }
 
-# eo common_name values GDAL color interps can map to (alpha etc. get name only)
+# eo:common_name values GDAL color interps can map to (alpha etc. get name only)
 _EO_COMMON = {"red", "green", "blue", "nir"}
 
 
@@ -129,43 +125,76 @@ def _pc_encoding(href: str) -> str:
     return low.rsplit(".", 1)[-1]  # laz | las
 
 
-# raster v1.1 statistics schema is closed, extract's extra "count" key must not leak in
-_RASTER_STAT_KEYS = ("minimum", "maximum", "mean", "stddev", "valid_percent")
+# statistics.count stays out: extract derives it from the mask band's mean, so a float
+# reports that estimate honestly while an integer would claim a count never taken
+# (the 1.1 Statistics Object does allow the key)
+_STAT_KEYS = ("minimum", "maximum", "mean", "stddev", "valid_percent")
+
+# what a band is, never what it measures: these identify a band and are never hoisted
+_BAND_IDENTITY = {"name", "eo:common_name"}
+
+# pystac 1.14.3 predates the unified bands array and reports eo/raster at v1.1.0, so the
+# URIs of the versions that define the fields written below cannot come from get_schema_uri()
+_EO_V2 = "https://stac-extensions.github.io/eo/v2.0.0/schema.json"
+_RASTER_V2 = "https://stac-extensions.github.io/raster/v2.0.0/schema.json"
 
 
-@extension("raster")
-def _populate_raster(item, pa, meta, fm) -> None:
-    """raster:bands on the asset (v1.1 per-band fields incl. sampling/resolution)."""
+@extension("bands")
+def _populate_bands(item, pa, meta, fm) -> None:
+    """STAC 1.1 unified bands on the asset. Values equal across every band are hoisted to the
+    asset, which the bands inherit; everything but identity hoists, so a single band without
+    identity leaves no bands array - an asset with one band is that band. The prefixed keys
+    actually written decide which extensions get declared - both v2.0.0 schemas reject a
+    declaration without one."""
+    multi = len(meta.raster_bands) > 1
+    if meta.raster_bands:
+        unknown = set(meta.raster_bands[0]["statistics"]) - set(_STAT_KEYS) - {"count"}
+        if unknown:
+            log.warning(f"statistics dropped, not in _STAT_KEYS: {sorted(unknown)}")
     bands = []
     for b in meta.raster_bands:
-        stats = {k: b["statistics"][k] for k in _RASTER_STAT_KEYS if b["statistics"].get(k) is not None}
-        rb = {
+        stats = {k: b["statistics"][k] for k in _STAT_KEYS if b["statistics"].get(k) is not None}
+        band = {}
+        ci = b["color_interp"]
+        # "undefined" is GDAL's word for no colour at all; "gray" on a lone band adds
+        # nothing an asset with one band does not already state
+        label = None if ci == "undefined" or (not multi and ci == "gray") else ci
+        name = b["description"] or label or (f"band{b['index']}" if multi else None)
+        if name:
+            band["name"] = name
+        if ci in _EO_COMMON:
+            band["eo:common_name"] = ci
+        band.update({
             "data_type": b["data_type"],
             "nodata": b["nodata"],
             "unit": b["unit"],
-            "scale": b["scale"],
-            "offset": b["offset"],
-            "bits_per_sample": b["bits_per_sample"],
-            "sampling": meta.raster_sampling,
-            "spatial_resolution": meta.raster_spatial_resolution,
             "statistics": stats or None,
-        }
-        bands.append({k: v for k, v in rb.items() if v is not None})
-    pa.extra_fields["raster:bands"] = bands
-    _add_schema(item, RasterExtension.get_schema_uri())
+            "raster:scale": b["scale"] if b["scale"] != 1.0 else None,      # identity is a no-op
+            "raster:offset": b["offset"] if b["offset"] != 0.0 else None,
+            "raster:bits_per_sample": b["bits_per_sample"],
+        })
+        bands.append({k: v for k, v in band.items() if v is not None})
 
+    # hoisted in declared band order, not set order: key order must not vary between runs
+    shared = [k for k in (bands[0] if bands else ()) if k not in _BAND_IDENTITY
+              and all(k in b and b[k] == bands[0][k] for b in bands[1:])]
+    for key in shared:
+        pa.extra_fields[key] = bands[0][key]
+        for b in bands:
+            del b[key]
+    # dataset-level in AssetMeta, so never per-band to begin with
+    for key, value in (("raster:sampling", meta.raster_sampling),
+                       ("raster:spatial_resolution", meta.raster_spatial_resolution)):
+        if value is not None:
+            pa.extra_fields[key] = value
+    if any(bands):  # all empty = single band, fully hoisted
+        pa.extra_fields["bands"] = bands
 
-@extension("eo")
-def _populate_eo(item, pa, meta, fm) -> None:
-    """eo:bands names from color interpretation (RGB orthos)."""
-    bands = []
-    for b in meta.raster_bands:
-        eb = {"name": b["description"] or b["color_interp"] or f"band{b['index']}"}
-        if b["color_interp"] in _EO_COMMON:
-            eb["common_name"] = b["color_interp"]
-        bands.append(eb)
-    pa.extra_fields["eo:bands"] = bands
-    _add_schema(item, EOExtension.get_schema_uri())
+    written = set(pa.extra_fields) | {k for b in bands for k in b}
+    if "eo:common_name" in written:
+        _add_schema(item, _EO_V2)
+    if any(k.startswith("raster:") for k in written):
+        _add_schema(item, _RASTER_V2)
 
 
 @extension("file")
@@ -397,4 +426,17 @@ if __name__ == "__main__":
         except ValueError:
             camp = date(2023, 2, 8)  # sample files without a date token
         item = build_item(p, camp)
+        # STAC 1.1 band invariants (no jsonschema here, so --validate cannot check them)
+        keys = set()
+        for label, a in item.assets.items():
+            where = f"{item.id}/{label}"
+            assert "eo:bands" not in a.extra_fields, f"{where}: pre-1.1 eo:bands"
+            assert "raster:bands" not in a.extra_fields, f"{where}: pre-1.1 raster:bands"
+            bands = a.extra_fields.get("bands", [])
+            assert all(bands), f"{where}: empty band object"
+            keys |= set(a.extra_fields) | {k for b in bands for k in b}
+        # a declared v2.0.0 extension without one of its fields fails require_fields
+        assert (_EO_V2 in item.stac_extensions) == ("eo:common_name" in keys), f"{item.id}: eo"
+        assert (_RASTER_V2 in item.stac_extensions) == any(
+            k.startswith("raster:") for k in keys), f"{item.id}: raster"
         log.info(f"item {item.id}: dt={item.datetime} ext={len(item.stac_extensions)} assets={list(item.assets)}")
