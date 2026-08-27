@@ -303,3 +303,28 @@ def test_build_item_pointcloud_copc_encoding(tmp_path, write_las):
     item = build_item(discover(copc)[0], CAMP, crs="EPSG:31256")
     assert item.properties["pc:encoding"] == "copc"
     assert item.assets["pointcloud_copc"].media_type == "application/vnd.laszip+copc"
+
+
+def test_build_item_histogram_lands_on_the_asset(tmp_path, write_gradient_tif):
+    """A height model has one band, so _populate_bands hoists it away entirely and the asset is
+    the band. The histogram is a sibling of statistics, never a member of it."""
+    write_gradient_tif(tmp_path / "pielach_2023-02-08_dsm_etrs89.tif")
+    item = build_item(discover(tmp_path)[0], CAMP)
+    asset = item.assets["dsm"]
+    hist = asset.extra_fields["raster:histogram"]
+
+    assert hist["count"] == 256 == len(hist["buckets"])
+    assert "bands" not in asset.extra_fields
+    assert "histogram" not in asset.extra_fields["statistics"]
+    assert _RASTER_V2 in item.stac_extensions
+
+
+def test_build_item_histogram_skips_orthophoto(tmp_path, write_rgb_tif):
+    # orthophoto carries no "histogram" key in its registry extensions: a distribution over an
+    # alpha or colour band describes the mask or the rendering, not a measurement
+    write_rgb_tif(tmp_path / "pielach_2023-02-08_transparent_mosaic_cog.tif")
+    item = build_item(discover(tmp_path)[0], CAMP)
+    asset = item.assets["orthophoto"]
+
+    assert "raster:histogram" not in asset.extra_fields
+    assert all("raster:histogram" not in b for b in asset.extra_fields["bands"])

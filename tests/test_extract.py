@@ -160,3 +160,57 @@ def test_shattered_mask_falls_back_to_bbox(tmp_path, caplog):
     assert meta.geometry_wgs84["type"] == "Polygon"
     assert len(meta.geometry_wgs84["coordinates"][0]) == 5, "expected the bbox rectangle"
     assert any("keeping bbox rectangle" in r.message for r in caplog.records)
+
+
+def test_histogram_bins_every_value(tmp_path, write_gradient_tif):
+    # 16x16 holding each Byte value once: 256 buckets of width 1, one pixel each. The edges
+    # are the data range padded half a bucket, so 0 and 255 sit on the outer bucket centres.
+    write_gradient_tif(tmp_path / "dsm.tif")
+    hist = raster(tmp_path / "dsm.tif").raster_bands[0]["histogram"]
+
+    assert hist["count"] == 256 == len(hist["buckets"]), hist["count"]
+    assert (hist["min"], hist["max"]) == (-0.5, 255.5)
+    assert hist["buckets"] == [1] * 256
+    assert sum(hist["buckets"]) == 256, "every valid pixel binned"
+
+
+def test_histogram_skipped_without_value_range(tmp_path, write_tif, caplog):
+    # constant fill: min == max. GDAL 3.1.2 would bin every pixel into bucket 0 and report
+    # success, so the omission has to be decided here rather than left to GDAL.
+    write_tif(tmp_path / "dsm.tif", 42)
+    with caplog.at_level("WARNING"):
+        meta = raster(tmp_path / "dsm.tif")
+
+    assert meta.raster_bands[0]["histogram"] is None
+    assert any("histogram skipped" in r.message for r in caplog.records)
+
+
+def test_histogram_only_on_single_band_rasters(tmp_path, write_rgb_tif):
+    # multi-band is orthophoto territory, which does not publish a histogram; not computing it
+    # is what keeps the extra pass off those files
+    write_rgb_tif(tmp_path / "ortho.tif")
+    assert all(b["histogram"] is None for b in raster(tmp_path / "ortho.tif").raster_bands)
+
+
+def test_histogram_over_nan_nodata_stays_json_safe(tmp_path):
+    # float band with nodata=NaN and a real value range: the bucket edges are derived from the
+    # statistics, so a NaN leaking into them would put invalid JSON in every item file
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(31256)
+    ds = gdal.GetDriverByName("GTiff").Create(str(tmp_path / "nan.tif"), 4, 4, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((-53000, 25, 0, 340000, 0, -25))
+    ds.SetProjection(srs.ExportToWkt())
+    band = ds.GetRasterBand(1)
+    band.SetNoDataValue(float("nan"))
+    nan = float("nan")
+    rows = [[nan, nan, 1.0, 2.0], [nan, nan, 3.0, 4.0],
+            [nan, nan, 5.0, 6.0], [nan, nan, 7.0, 8.0]]
+    band.WriteRaster(0, 0, 4, 4, struct.pack("<16f", *[v for row in rows for v in row]),
+                     buf_type=gdal.GDT_Float32)
+    ds = None
+
+    meta = raster(tmp_path / "nan.tif")
+    hist = meta.raster_bands[0]["histogram"]
+    assert sum(hist["buckets"]) == 8, "NaN pixels stay out of the distribution"
+    assert hist["min"] < 1.0 and hist["max"] > 8.0, "edges padded around the valid range"
+    json.dumps(meta.raster_bands, allow_nan=False)  # raises on any leftover NaN/Inf

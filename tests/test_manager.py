@@ -47,7 +47,7 @@ def test_failed_item_isolated(tmp_path, write_tif, write_tif_no_crs):
     res = update_catalog(tmp_path, out, RunPolicy())
     assert res["ok"]["2021-02-02"] == {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 1}, res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
-    assert cat.get_child("pielach_2021-02-02") is None
+    assert cat.get_child("catalog_2021-02-02") is None
 
 
 def test_catalog_validates_against_stac_schemas(tmp_path, write_tif, write_rgb_tif):
@@ -81,9 +81,9 @@ def test_subcollection_id_not_doubled_and_asset_href_modes(tmp_path, write_tif):
     # default: subcollection id takes the subdir name as-is, no camp_id doubling
     update_catalog(tmp_path, out, RunPolicy())
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
-    coll = cat.get_child("pielach_2024-10-09")
+    coll = cat.get_child("catalog_2024-10-09")
     assert coll.get_child("pielach_2024-10-09_tiles") is not None
-    assert coll.get_child("pielach_2024-10-09_pielach_2024-10-09_tiles") is None
+    assert coll.get_child("catalog_2024-10-09_pielach_2024-10-09_tiles") is None
     # absolute (default) data href keeps the build-time path; thumbnail stays relative
     assert Path(_raw_href(out, "pielach_2024-10-09_dsm_etrs89", "data")).is_absolute()
     assert (_raw_href(out, "pielach_2024-10-09_dsm_etrs89", "thumbnail")
@@ -94,6 +94,46 @@ def test_subcollection_id_not_doubled_and_asset_href_modes(tmp_path, write_tif):
     assert _raw_href(out, "pielach_2024-10-09_dsm_etrs89", "data").startswith("..")
     assert (_raw_href(out, "pielach_2024-10-09_dsm_etrs89", "thumbnail")
             == "./pielach_2024-10-09_dsm_etrs89_thumbnail.png")
+
+
+def test_new_product_type_from_sidecar_only(tmp_path, write_tif):
+    """A product the default registry does not know reaches the catalog through
+    campaign.yaml alone: new pattern + new label, no code change."""
+    out = tmp_path / "catalog"
+    camp = tmp_path / "2024-10-09"
+    camp.mkdir()
+    write_tif(camp / "pielach_2024-10-09_bathy_depth.tif", 10)
+    (camp / "campaign.yaml").write_text("", encoding="utf-8")
+
+    # default registry: no pattern matches the file, so the campaign stays empty
+    res = update_catalog(tmp_path, out, RunPolicy())
+    assert res["ok"]["2024-10-09"] == {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 0}, res
+    assert not (out / "catalog.json").exists() or not list(
+        pystac.Catalog.from_file(str(out / "catalog.json")).get_items(recursive=True))
+
+    (camp / "campaign.yaml").write_text(
+        "patterns:\n"
+        "  waterdepth:\n"
+        "    require: [bathy, depth]\n"
+        "    extensions: [.tif, .tiff]\n"
+        "labels:\n"
+        "  waterdepth:\n"
+        "    category: waterdepth\n"
+        "    kind: raster\n"
+        "    stac_roles: [data]\n"
+        "    media_type: image/tiff; application=geotiff\n"
+        "    extensions: [bands, projection, file]\n"
+        "    thumbnail: false\n",
+        encoding="utf-8")
+
+    res = update_catalog(tmp_path, out, RunPolicy())
+    assert res["ok"]["2024-10-09"] == {"rebuilt": 1, "reused": 0, "stale": 0, "failed": 0}, res
+    cat = pystac.Catalog.from_file(str(out / "catalog.json"))
+    item = next(iter(cat.get_items(recursive=True)))
+    assert item.id == "pielach_2024-10-09_bathy_depth"
+    asset = item.assets["waterdepth"]       # asset key is the registry label
+    assert asset.media_type == "image/tiff; application=geotiff"
+    assert asset.roles == ["data"] and "proj:code" in item.properties
 
 
 def test_tiny_pcl_tiles_dropped(tmp_path, monkeypatch):
@@ -198,7 +238,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif, monkeypatch):
     assert "2023-05-05_broken" in res["failed"]
 
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
-    camp = cat.get_child("pielach_2023-02-08")
+    camp = cat.get_child("catalog_2023-02-08")
     assert camp is not None and camp.title == "Test campaign"
     sub = camp.get_child("pielach_2023-02-08_tiles")
     assert sub is not None and sub.title == "DTM tiles"
@@ -267,7 +307,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif, monkeypatch):
     res = update_catalog(tmp_path, out, RunPolicy())
     assert res["ok"]["2023-02-08_test"] == {"rebuilt": 0, "reused": 3, "stale": 1, "failed": 0}, res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
-    camp = cat.get_child("pielach_2023-02-08")
+    camp = cat.get_child("catalog_2023-02-08")
     assert {i.id for i in camp.get_items()} == {"pielach_2023-02-08_dtm_etrs89"}
     sub = camp.get_child("pielach_2023-02-08_tiles")
     assert len(list(sub.get_items())) == 3  # 2 live + 1 stale clone kept in place
@@ -275,7 +315,7 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif, monkeypatch):
     # duplicate campaign id fails isolated, first campaign untouched
     dup = tmp_path / "2023-06-06_dup"
     dup.mkdir()
-    (dup / "campaign.yaml").write_text("collection:\n  id: pielach_2023-02-08\n",
+    (dup / "campaign.yaml").write_text("collection:\n  id: catalog_2023-02-08\n",
                                        encoding="utf-8")
     res = update_catalog(tmp_path, out, RunPolicy())
     assert "already used" in res["failed"]["2023-06-06_dup"], res
@@ -285,16 +325,16 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif, monkeypatch):
     # vanished campaign dir: removal blocked while another campaign fails...
     shutil.rmtree(camp_dir)
     res = update_catalog(tmp_path, out, RunPolicy(stale="remove"))
-    assert res["stale_collections"] == ["pielach_2023-02-08"] and res["failed"], res
+    assert res["stale_collections"] == ["catalog_2023-02-08"] and res["failed"], res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
-    assert cat.get_child("pielach_2023-02-08") is not None
+    assert cat.get_child("catalog_2023-02-08") is not None
 
     # ...then removed once the run is clean
     shutil.rmtree(tmp_path / "2023-05-05_broken")
     res = update_catalog(tmp_path, out, RunPolicy(stale="remove"))
-    assert not res["failed"] and res["stale_collections"] == ["pielach_2023-02-08"], res
+    assert not res["failed"] and res["stale_collections"] == ["catalog_2023-02-08"], res
     cat = pystac.Catalog.from_file(str(out / "catalog.json"))
-    assert cat.get_child("pielach_2023-02-08") is None
+    assert cat.get_child("catalog_2023-02-08") is None
 
 
 def _coll_asset_href(out: Path, coll_id: str, key: str) -> str:

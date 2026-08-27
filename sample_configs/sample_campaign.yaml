@@ -1,42 +1,89 @@
-# Per-campaign sidecar. Place as "campaign.yaml" inside each campaign folder.
-# All blocks optional; typically only "collection" is needed.
+# Per-campaign sidecar. Name it "campaign.yaml" and place it in the campaign folder.
+# The campaign date comes from the folder name (its ISO token), never from here.
+# Every block is optional. A normal campaign needs only "collection" and "properties".
 
 collection:
+  # id: pielach_2024-10-09     # default: <root catalog id>_<folder date>. A new id creates a new
+  #                            # collection and leaves the old one stale
   title: Pielach 2024-10-09
   description: >-
-    Topo-bathymetric LiDAR survey of the Pielach river
-  license: other                 # SPDX id or "other"
-  # license_link: https://...    # rel=license link, recommended when license is "other"
-  providers:
+    Topo-bathymetric LiDAR survey of the Pielach river, flown with a Riegl VQ-880-GII.
+    Products: point cloud (tiled), DSM, DTM, orthophoto.
+  license: other               # SPDX id, or "other"
+  license_link: https://example.org/terms   # rel=license link; "other" without one only warns.
+                               # Note the spelling: snake_case here, camelCase (licenseLink)
+                               # for the root catalog in config.yaml
+  providers:                   # STAC list form
     - name: TU Wien, Department of Geodesy and Geoinformation
       roles: [processor, host]
       url: https://www.tuwien.at/mg/geo
-  keywords: [LiDAR, topo-bathymetry, point cloud, DSM, DTM, Pielach, river]
+    - name: Skyability
+      roles: [producer]
+  # providers:                 # short name-keyed form, same result
+  #   TU Wien, Department of Geodesy and Geoinformation:
+  #     roles: [processor, host]
+  #     url: https://www.tuwien.at/mg/geo
+  keywords: [LiDAR, topo-bathymetry, point cloud, DSM, DTM, orthophoto, Pielach, river]
 
-# Common metadata copied onto every item, auto-rolled into the collection summaries.
-# Override tiers: campaign-wide base -> byLabel (registry label) -> byId (exact item id).
-# A null value drops the key for the matched items. It only cancels a base value set here,
-# extracted keys (gsd, proj:*, pc:*) stay on the item.
+# Metadata attached to every item, then rolled up into the collection summaries.
+# Tiers: campaign base -> byLabel (registry label) -> byId (exact item id). A later tier wins.
+# A null value drops the key for the matched items, but only a key set here; extracted keys
+# (gsd, proj:*, pc:*) stay on the item.
+# Item ids are the filename tokens with the cog marker removed, in their original case.
 properties:
   instruments: [riegl-vq-880-gii]
   platform: airborne
-  # byLabel:
-  #   orthophoto:
-  #     instruments: null        # camera product, scanner does not apply
-  # byId:
-  #   pielach_2024-10-09_DSM_etrs89:
-  #     some_key: value
+  byLabel:
+    orthophoto:
+      instruments: null        # a camera product, so the scanner does not apply
+  byId:
+    pielach_2024-10-09_DTM_masked_etrs89:
+      title: DTM 2024-10-09, water surface masked   # overrides the generated item title
 
-# CRS fallback, consulted only when a file carries no CRS of its own.
+# Subcollection layout. The automatic rule: more than one file of the same category in one
+# subdir makes that subdir a subcollection, named after itself. The block below bends the rule.
+# hierarchy:
+#   placement:                 # item id -> group name, or ~ to force the item flat
+#     pielach_2024-10-09_tile_017: pielach_2024-10-09_tiles
+#     pielach_2024-10-09_overview: ~
+#   groups:                    # metadata for the subcollection; providers and keywords are inherited
+#     pielach_2024-10-09_tiles:
+#       title: Point cloud tiles 2024-10-09
+#       description: COPC tiles on a 500 m grid.
+
+# CRS fallback. Read only when a file carries no CRS of its own.
 # crs: EPSG:31256
 
-# Registry overrides (rarely needed). A pattern entry replaces the whole default entry;
-# a label entry must carry all keys. Example: also accept plain .las point clouds.
+# Registry overrides, rarely needed. A "patterns" entry replaces the whole default entry;
+# an omitted require/forbid is empty and therefore matches anything, but extensions must be
+# present or the pattern never fires. The stem is split on "_": every require token must be
+# present and no forbid token may be. The most specific pattern wins (more require tokens
+# first, then the longer file extension).
 # patterns:
 #   pointcloud:
-#     extensions: [.laz, .las]
+#     extensions: [.laz, .las]           # accept plain .las as well
+#   bathy_dtm:                           # a brand new pattern, which needs its own label below
+#     require: [dtm, bathy]
+#     forbid: [shd]
+#     extensions: [.tif, .tiff]
+#
+# A "labels" entry likewise replaces the whole default entry. An omitted key defaults to
+# empty, which only makes sense for "category: ignore" - a real product needs every key.
+# An unknown key in "patterns" or "labels" raises, so a typo fails loudly instead of
+# quietly dropping the matched file.
+# labels:
+#   bathy_dtm:
+#     category: dtm                      # item grouping and collection placement; "ignore" drops it silently
+#     kind: raster                       # reader dispatch: raster | pcl
+#     stac_roles: [data]
+#     media_type: image/tiff; application=geotiff
+#     extensions: [bands, projection, file, histogram]   # populators to run. Available:
+#                                        # bands, projection, file, pointcloud, histogram.
+#                                        # histogram publishes raster:histogram and belongs on
+#                                        # height models only - see docs/adr/0003
+#     thumbnail: true
 
-# Drop specific files from the catalog. Globs matched case-insensitively against file names.
+# Keep files out of the catalog. Globbed against the file name, case-insensitive.
 # exclude:
-#   - pielach_2021-03-09.laz     # e.g. a redundant monolithic point cloud
+#   - pielach_2021-03-09.laz             # redundant monolithic cloud, the tiles are the truth
 #   - "*_draft.tif"

@@ -16,6 +16,10 @@ port = int(sys.argv[3]) if len(sys.argv) > 3 else 8111
 
 
 class Handler(SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def translate_path(self, path):
         clean = path.split("?", 1)[0].split("#", 1)[0]
         is_browser = clean == "/browser" or clean.startswith("/browser/")

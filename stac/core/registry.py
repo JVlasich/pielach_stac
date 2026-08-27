@@ -2,7 +2,8 @@
 
 Per-campaign overrides ('campaign.yaml'): a 'patterns' entry replaces a whole
 STEM_PATTERNS entry (omitted require/forbid/extensions default to []). A 'labels'
-entry replaces a whole LABELS entry and must carry every key (see _validate TODO).
+entry replaces a whole LABELS entry; omitted keys default to empty, which is only
+useful for a 'category: ignore' label. Unknown keys in either block raise.
 New patterns/labels can be defined entirely in overrides.
 
 Also here: override merge, validation."""
@@ -131,7 +132,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["bands", "projection", "file"],
+        "extensions": ["bands", "projection", "file", "histogram"],
         "thumbnail":  True,
     },
     "dtm_filled": {
@@ -139,7 +140,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["bands", "projection", "file"],
+        "extensions": ["bands", "projection", "file", "histogram"],
         "thumbnail":  True,
     },
     "dtm_masked": {
@@ -147,7 +148,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["bands", "projection", "file"],
+        "extensions": ["bands", "projection", "file", "histogram"],
         "thumbnail":  True,
     },
 
@@ -157,7 +158,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["bands", "projection", "file"],
+        "extensions": ["bands", "projection", "file", "histogram"],
         "thumbnail":  True,
     },
     "dsm_filled": {
@@ -165,7 +166,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["bands", "projection", "file"],
+        "extensions": ["bands", "projection", "file", "histogram"],
         "thumbnail":  True,
     },
     "dsm_masked": {
@@ -173,7 +174,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "kind":       "raster",
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
-        "extensions": ["bands", "projection", "file"],
+        "extensions": ["bands", "projection", "file", "histogram"],
         "thumbnail":  True,
     },
 
@@ -202,17 +203,27 @@ SIDECAR_EXTENSIONS = {".prj", ".tfw", ".aux.xml"}  # recognized, never an asset,
 # --- override merge ---
 
 _PATTERN_KEYS = ("require", "forbid", "extensions")
-_LABEL_KEYS = ("category", "kind", "stac_roles", "media_type", "extensions", "thumbnail")
+# label key -> value backfilled when an override omits it
+_LABEL_DEFAULTS: dict[str, Any] = {
+    "category":   "",
+    "kind":       "",
+    "stac_roles": [],
+    "media_type": "",
+    "extensions": [],
+    "thumbnail":  False,
+}
+_LABEL_KEYS = tuple(_LABEL_DEFAULTS)
 
 
 def merge_overrides(patterns, labels):
     """Per-campaign overrides onto the defaults. Returns merged (stem_patterns,
     labels) copies; module globals stay unmutated."""
     sp = {k: dict(v) for k, v in STEM_PATTERNS.items()}
-    sp.update(patterns or {})
+    # copy the caller's entries too: _validate normalizes/backfills them in place
+    sp.update({k: dict(v) if isinstance(v, dict) else v for k, v in (patterns or {}).items()})
 
     lb = {k: dict(v) for k, v in LABELS.items()}
-    lb.update(labels or {})
+    lb.update({k: dict(v) if isinstance(v, dict) else v for k, v in (labels or {}).items()})
 
     _validate(sp, lb)
     return sp, lb
@@ -222,14 +233,25 @@ def _validate(stem_patterns, labels) -> None:
     for key, value in stem_patterns.items():
         if not isinstance(value, dict) or not value:
             raise ValueError(f"pattern {key!r}: set at least one key")
+        unknown = [k for k in value if k not in _PATTERN_KEYS]
+        if unknown:  # a typo would otherwise read as an omitted key and match everything
+            raise ValueError(f"pattern {key!r}: unknown keys {unknown}, known: {list(_PATTERN_KEYS)}")
         for k in _PATTERN_KEYS:
             if isinstance(value.get(k), str):  # a bare scalar would iterate character-wise
                 log.warning(f"pattern {key!r}: {k} is the string {value[k]!r}, read as a one-element list")
                 value[k] = [value[k]]
             value[k] = [str(t).lower() for t in value.get(k, [])]  # omitted -> []; matching is lowercased
     for key, value in labels.items():
+        unknown = [k for k in value if k not in _LABEL_KEYS]
+        if unknown:  # a typo would otherwise backfill an all-empty label and drop the files silently
+            raise ValueError(f"label {key!r}: unknown keys {unknown}, known: {list(_LABEL_KEYS)}")
         missing = [k for k in _LABEL_KEYS if k not in value]
-        if missing:
-            # labels require all keys for now.
-            # TODO: infer missing label keys at runtime instead of erroring.
-            raise ValueError(f"label {key!r}: missing keys {missing}")
+        if not missing:
+            continue
+        for k in missing:
+            default = _LABEL_DEFAULTS[k]
+            value[k] = list(default) if isinstance(default, list) else default
+        # harmless for an ignore label (dropped in discover before kind is read),
+        # a build failure for anything else
+        report = log.debug if value["category"] == "ignore" else log.warning
+        report(f"label {key!r}: missing keys {missing}, defaulted to empty")

@@ -47,6 +47,18 @@ def _write_rgb_tif(path, size: int = 8) -> None:
     ds = None
 
 
+def _write_gradient_tif(path) -> None:
+    """16x16 on the _write_tif grid holding every Byte value exactly once. Every other raster
+    fixture is a constant fill, which has no value range to bin."""
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(31256)
+    ds = gdal.GetDriverByName("GTiff").Create(str(path), 16, 16, 1, gdal.GDT_Byte)
+    ds.SetGeoTransform((-53000, 25, 0, 340000, 0, -25))
+    ds.SetProjection(srs.ExportToWkt())
+    ds.GetRasterBand(1).WriteRaster(0, 0, 16, 16, bytes(range(256)))
+    ds = None
+
+
 def _write_tif_no_crs(path, size: int = 4) -> None:
     """Georeferenced grid but no CRS declared (legacy-file case)."""
     ds = gdal.GetDriverByName("GTiff").Create(str(path), size, size, 1, gdal.GDT_Byte)
@@ -85,6 +97,11 @@ def write_las():
 @pytest.fixture
 def write_rgb_tif():
     return _write_rgb_tif
+
+
+@pytest.fixture
+def write_gradient_tif():
+    return _write_gradient_tif
 
 
 @pytest.fixture

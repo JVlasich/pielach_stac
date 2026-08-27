@@ -23,9 +23,9 @@ from .thumbnail import (pcl_thumbnails_available, render_collection_thumbnail,
 log = logging.getLogger(__name__)
 
 CATALOG_DEFAULTS = {
-    "id": "pielach",
-    "title": "Pielach River Topo-Bathymetric LiDAR Time Series",
-    "description": "Automated STAC catalog of the processed Pielach campaign datasets.",
+    "id": "catalog",
+    "title": "STAC Catalog",
+    "description": "Static STAC catalog.",
     # resolved in cli.py
     "root": None,
     "out": None,             # default: <root>/catalog
@@ -154,7 +154,7 @@ def process_campaign(
     sp, lb = merge_overrides(sc.get("patterns"), sc.get("labels"))
 
     camp = campaign_date(folder.name)
-    camp_id = (sc.get("collection") or {}).get("id") or f"pielach_{camp.isoformat()}"
+    camp_id = (sc.get("collection") or {}).get("id") or f"{root.id}_{camp.isoformat()}"
     _register_id(seen_ids, camp_id, "collection", folder.name, policy.id_collisions)
 
     products = discover(folder, policy, stem_patterns=sp, labels=lb,

@@ -1,0 +1,6 @@
+# Pielach catalog identity. Without this file the tool builds a generically
+# named catalog ("catalog", "catalog_<date>" collections).
+catalog:
+  id: pielach
+  title: Pielach River Topo-Bathymetric LiDAR Time Series
+  description: Automated STAC catalog of the processed Pielach campaign datasets.

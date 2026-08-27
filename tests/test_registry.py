@@ -14,13 +14,40 @@ def test_pattern_override_defaults_omitted_keys_leaves_siblings():
     assert sp["dtm"] == STEM_PATTERNS["dtm"] and sp["dsm"] == STEM_PATTERNS["dsm"]
 
 
-def test_new_label_needs_all_keys():
+def test_full_label_override_replaces_entry():
     _, lb = merge_overrides({}, {"pointcloud": FULL_LABEL})
     assert lb["pointcloud"] == FULL_LABEL
 
-    incomplete = {k: v for k, v in FULL_LABEL.items() if k != "extensions"}
-    with pytest.raises(ValueError):
-        merge_overrides({}, {"x": incomplete})
+
+def test_partial_ignore_label_backfills_quietly(caplog):
+    _, lb = merge_overrides({}, {"scratch": {"category": "ignore"}})
+    assert lb["scratch"] == {"category": "ignore", "kind": "", "stac_roles": [],
+                             "media_type": "", "extensions": [], "thumbnail": False}
+    assert "missing keys" not in caplog.text   # debug for ignore labels, not a warning
+
+
+def test_partial_product_label_backfills_with_warning(caplog):
+    _, lb = merge_overrides({}, {"bathy": {"category": "dtm", "kind": "raster"}})
+    assert lb["bathy"]["stac_roles"] == [] and lb["bathy"]["thumbnail"] is False
+    assert "missing keys" in caplog.text       # empty kind/media_type would fail the item build
+
+
+def test_unknown_pattern_key_raises():
+    with pytest.raises(ValueError, match="unknown keys"):
+        merge_overrides({"dtm": {"require": ["dtm"], "extensios": [".tif"]}}, {})
+
+
+def test_unknown_label_key_raises():
+    with pytest.raises(ValueError, match="unknown keys"):
+        merge_overrides({}, {"dtm": {**FULL_LABEL, "catgory": "dtm"}})
+
+
+def test_override_dicts_are_copied_not_adopted():
+    patterns = {"dtm": {"require": ["DTM"]}}
+    labels = {"scratch": {"category": "ignore"}}
+    merge_overrides(patterns, labels)
+    assert patterns == {"dtm": {"require": ["DTM"]}}          # not lowercased in place
+    assert labels == {"scratch": {"category": "ignore"}}      # not backfilled in place
 
 
 def test_empty_pattern_raises():

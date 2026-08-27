@@ -196,6 +196,19 @@ def _populate_bands(item, pa, meta, fm) -> None:
         _add_schema(item, _RASTER_V2)
 
 
+@extension("histogram")
+def _populate_histogram(item, pa, meta, fm) -> None:
+    """Height models only, and those are single-band, so _populate_bands has hoisted every field
+    onto the asset and left no bands array to carry this - the asset is the band. v2.0.0 allows
+    the field on an asset for exactly that reading."""
+    if len(meta.raster_bands) != 1:
+        return
+    hist = meta.raster_bands[0].get("histogram")
+    if hist:
+        pa.extra_fields["raster:histogram"] = hist
+        _add_schema(item, _RASTER_V2)
+
+
 @extension("file")
 def _populate_file(item, pa, meta, fm) -> None:
     f = FileExtension.ext(pa, add_if_missing=True)
@@ -431,6 +444,9 @@ if __name__ == "__main__":
             assert "raster:bands" not in a.extra_fields, f"{where}: pre-1.1 raster:bands"
             bands = a.extra_fields.get("bands", [])
             assert all(bands), f"{where}: empty band object"
+            hist = a.extra_fields.get("raster:histogram")
+            assert not hist or not bands, f"{where}: asset histogram beside a bands array"
+            assert not hist or len(hist["buckets"]) == hist["count"], f"{where}: bucket count"
             keys |= set(a.extra_fields) | {k for b in bands for k in b}
         # a declared v2.0.0 extension without one of its fields fails require_fields
         assert (_EO_V2 in item.stac_extensions) == ("eo:common_name" in keys), f"{item.id}: eo"

@@ -35,6 +35,9 @@ _MIN_HOLE_M2    = 1000.0  # interior gaps below this are not represented
 _SIMPLIFY_M     = 6.0     # vertex tolerance; above a gap's radius the ring collapses
 _MIN_AREA_RATIO = 0.5     # footprint below this share of the valid area -> bbox rectangle
 
+# what gdalinfo -hist reports, and what both raster v2.0.0 examples carry
+_HIST_BUCKETS = 256
+
 
 @dataclass
 class AssetMeta:
@@ -274,6 +277,25 @@ def _fallback_srs(crs: str, path) -> "osr.SpatialReference":
     return srs
 
 
+def _histogram(band, minimum: float | None, maximum: float | None, path: str) -> dict | None:
+    """Exact value distribution over the valid pixels, gdalinfo -hist conventions: the edges are
+    padded half a bucket so the data min/max land on the first/last bucket centre. GetHistogram's
+    python defaults are byte-oriented (min=-0.5, max=255.5) and approximate, so nothing is implicit.
+    A constant band has no range to bin, and GDAL 3.1.2 answers that case by putting every pixel in
+    bucket 0 and reporting success, so this guard is the only thing catching it (3.5 raises).
+    Returns: the STAC Histogram Object, where "count" is the bucket count - not the pixel count
+    the statistics "count" means."""
+    if minimum is None or maximum is None or not maximum > minimum:
+        log.warning(f"histogram skipped, no usable value range: {path}")
+        return None
+    width = (maximum - minimum) / (_HIST_BUCKETS - 1)
+    lo, hi = minimum - width / 2, maximum + width / 2
+    # include_out_of_range keeps the bucket sum at the valid pixel count, approx_ok=0 keeps the
+    # distribution as exact as the statistics its edges come from
+    return {"count": _HIST_BUCKETS, "min": lo, "max": hi,
+            "buckets": band.GetHistogram(lo, hi, _HIST_BUCKETS, 1, 0)}
+
+
 def raster(path: str, crs: str | None = None) -> AssetMeta:
     """Raster metadata via GDAL.
     Item datetime is campaign-driven, not read here; TIFFTAG_DATETIME is kept only as
@@ -306,6 +328,9 @@ def raster(path: str, crs: str | None = None) -> AssetMeta:
             frac = b.GetMaskBand().ComputeStatistics(False)[2] / 255.0
             valid_percent, count = round(frac * 100, 4), round(frac * w * h)
         nbits = b.GetMetadataItem("NBITS", "IMAGE_STRUCTURE")
+        # single band only: the registry decides which products publish one, this decides who
+        # pays for it - a multi-band ortho would buy a distribution per band and never use it
+        hist = _histogram(b, minimum, maximum, path) if ds.RasterCount == 1 else None
         bands.append({
             "index":        i,
             "data_type":    _dtype_name(b.DataType),
@@ -318,6 +343,7 @@ def raster(path: str, crs: str | None = None) -> AssetMeta:
             "bits_per_sample": int(nbits) if nbits else None,
             "statistics":   {"minimum": minimum, "maximum": maximum, "mean": mean, "stddev": stddev,
                              "valid_percent": valid_percent, "count": count},
+            "histogram":    hist,
         })
 
     # native bbox from geotransform corners (handles rotated rasters)
@@ -549,5 +575,10 @@ if __name__ == "__main__":
                  f"unit={b['unit']} scale={b['scale']} offset={b['offset']} nbits={b['bits_per_sample']} "
                  f"min={s['minimum']:.3f} max={s['maximum']:.3f} mean={s['mean']:.3f} std={s['stddev']:.3f} "
                  f"valid={s['valid_percent']:.1f}% count={s['count']}")
+        if b["histogram"]:
+            hist = b["histogram"]
+            assert len(hist["buckets"]) == hist["count"], hist
+            log.info(f"    histogram {hist['count']} buckets from {hist['min']:.3f} to "
+                     f"{hist['max']:.3f}, {sum(hist['buckets'])} pixels binned")
         log.debug(f"\n{meta}")
     log.info("raster self-check ok")
