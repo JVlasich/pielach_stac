@@ -101,6 +101,25 @@ def test_subcollection_id_not_doubled_and_asset_href_modes(tmp_path, write_tif):
             == "./pielach_2024-10-09_dsm_etrs89_thumbnail.png")
 
 
+def test_dateless_subcollection_ids_qualified_per_campaign(tmp_path, write_tif):
+    """A subdir without an ISO date token (a hand-made tiles/) is not campaign-unique on
+    its own: two campaigns would publish two collections with one id."""
+    out = tmp_path / "catalog"
+    for date in ("2020-01-01", "2021-02-02"):
+        tiles = tmp_path / date / "tiles"
+        tiles.mkdir(parents=True)
+        write_tif(tiles / f"pielach_{date}_dtm_526000_534000.tif", 10)
+        write_tif(tiles / f"pielach_{date}_dtm_527000_534000.tif", 20)
+        (tmp_path / date / "campaign.yaml").write_text("", encoding="utf-8")
+
+    res = update_catalog(tmp_path, out, RunPolicy())
+    assert not [w for w in res["warnings"] if "id collision" in w], res["warnings"]
+    cat = pystac.Catalog.from_file(str(out / "catalog.json"))
+    for date in ("2020-01-01", "2021-02-02"):
+        coll = cat.get_child(f"catalog_{date}")
+        assert [c.id for c in coll.get_children()] == [f"catalog_{date}_tiles"]
+
+
 def test_new_product_type_from_sidecar_only(tmp_path, write_tif):
     """A product the default registry does not know reaches the catalog through
     campaign.yaml alone: new pattern + new label, no code change."""
@@ -184,7 +203,8 @@ def test_tiny_pcl_tiles_dropped(tmp_path, monkeypatch):
     assert ids == {"pielach_2024-10-09_big"}, ids  # 3-point tile dropped, real tile kept
 
     # P2-1: the tiles subcollection inherits the campaign's providers/keywords
-    sub = camp_coll.get_child("tiles")
+    # (group "tiles" carries no date, so the id is campaign-qualified)
+    sub = camp_coll.get_child("pielach_2024-10-09_tiles")
     assert sub.providers and sub.providers[0].name == "TU Wien"
     assert "LiDAR" in (sub.keywords or [])
 

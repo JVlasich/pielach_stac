@@ -67,7 +67,10 @@ def test_srs_from_wkt_and_sidecar_keep_easting_first(tmp_path, write_tif, write_
     las.y = np.array([339900.0, 339900.0, 340000.0, 340000.0])
     las.z = np.zeros(4)
     las.write(str(tmp_path / "corners.las"))
-    assert pointcloud(tmp_path / "corners.las").bbox_wgs84 == pytest.approx(reference)
+    meta = pointcloud(tmp_path / "corners.las")
+    assert meta.bbox_wgs84 == pytest.approx(reference)
+    # the VLR carries WKT1 (PROJCS), proj:wkt2 has to be WKT2 (PROJCRS)
+    assert meta.proj_wkt.startswith("PROJCRS"), meta.proj_wkt[:40]
 
 
 def test_mask_footprint_shrinks_geometry(tmp_path, write_tif, write_masked_tif):

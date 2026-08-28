@@ -15,7 +15,7 @@ import yaml
 from ..core import config
 from ..core.registry import merge_overrides
 from .build import build_collection, build_item, campaign_date
-from .discover import discover
+from .discover import discover, qualify_id
 from .extract import file_meta, pcl_point_count
 from .hierarchy import resolve_hierarchy
 from .policy import RunPolicy
@@ -310,8 +310,9 @@ def process_campaign(
     for node in nodes[1:]:
         if not node.products:
             continue
-        # the subdir already carries the campaign (pre-tool writes <stem>_tiles), take it as-is
-        sub_id = node.name
+        # usually the subdir already carries the campaign (pre-tool writes <stem>_tiles);
+        # qualify the ones that do not, same rule as item ids
+        sub_id = qualify_id(node.name, camp_id)
         _register_id(seen_ids, sub_id, "subcollection", folder.name, policy.id_collisions)
         cat = node.products[0].category
         camp_meta = sc.get("collection") or {}  # tiles inherit the campaign's attribution

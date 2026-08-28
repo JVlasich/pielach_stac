@@ -153,10 +153,22 @@ def _item_id(name: str, ext: str) -> str:
 
 
 def _twin_key(m: "_Match"):
-    """Format twins = only the cog/copc marker differs (dtm.tif vs dtm_cog.tif;
-    x.laz vs x.copc.laz -- .copc is part of the matched ext)."""
-    tokens = frozenset(m.path.name[: -len(m.ext)].lower().split("_")) - {"cog"}
-    return (m.path.parent, m.category, tokens)
+    """Twins are the files that would produce the same item id: only the cog/copc marker
+    differs (dtm.tif vs dtm_cog.tif; x.laz vs x.copc.laz -- .copc is part of the matched
+    ext). Keyed on the id itself, so two names whose tokens are a permutation of each
+    other stay separate."""
+    return (m.path.parent, m.category, _item_id(m.path.name, m.ext).lower())
+
+
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def qualify_id(raw_id: str, prefix: str | None) -> str:
+    """Campaign-qualified id. An ISO date token already makes a name campaign-unique, so
+    only date-less ones take the prefix. Same rule for item and subcollection ids."""
+    if prefix and not _ISO_DATE.search(raw_id):
+        return f"{prefix}_{raw_id}"
+    return raw_id
 
 
 def _cog_named(m: "_Match") -> bool:
@@ -252,9 +264,6 @@ def _handle_unknown(path: Path, reason: str, policy: str) -> None:
     # skip: silent
 
 
-_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-
-
 def discover(folder: str | Path, policy: RunPolicy = RunPolicy(), *,
              stem_patterns=None, labels=None, id_prefix: str | None = None,
              exclude: list[str] | None = None) -> list:
@@ -309,9 +318,7 @@ def discover(folder: str | Path, policy: RunPolicy = RunPolicy(), *,
     products = []
     seen_ids: dict = {}
     for m in sorted(matches, key=lambda m: m.path.name):
-        item_id = _item_id(m.path.name, m.ext)
-        if id_prefix and not _ISO_DATE.search(item_id):
-            item_id = f"{id_prefix}_{item_id}"
+        item_id = qualify_id(_item_id(m.path.name, m.ext), id_prefix)
         # if item_id[:1].isupper():
         #     log.warning(f"id starts with an uppercase letter (kept as-is): {item_id}")
         if item_id in seen_ids:

@@ -155,6 +155,16 @@ def test_probed_cn_beats_cog_named_non_cog(tmp_path):
     assert kept.cloud_native and kept.media_type == COG_MEDIA_TYPE
 
 
+def test_permuted_tile_offsets_stay_separate_items(tmp_path):
+    # tac_raster.tile_to_cog names tiles {stem}_{xoff}_{yoff}, so a square grid produces
+    # both offset permutations; they are different tiles, not format twins
+    _write_raster(tmp_path / "pielach_2023-02-08_dtm_0_16384.tif", cog=True)
+    _write_raster(tmp_path / "pielach_2023-02-08_dtm_16384_0.tif", cog=True)
+
+    ids = {p.id for p in discover(tmp_path)}
+    assert ids == {"pielach_2023-02-08_dtm_0_16384", "pielach_2023-02-08_dtm_16384_0"}
+
+
 def test_exclude_glob_drops_named_file(tmp_path):
     (tmp_path / "pielach_2023-02-08_524000_534000.copc.laz").touch()  # tile, kept
     (tmp_path / "pielach_2023-02-08.laz").touch()                     # mono full cloud, excluded

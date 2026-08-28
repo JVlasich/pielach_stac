@@ -474,6 +474,8 @@ def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
             raise ValueError(f"{path}: invalid CRS WKT")
         # easting-first, as the coordinates are (see _fallback_srs)
         srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        # proj:wkt2 must be WKT2; a LAS WKT VLR normally carries WKT1
+        wkt = srs.ExportToWkt(["FORMAT=WKT2_2018"])
     elif crs:
         srs = _fallback_srs(crs, path)
         wkt = srs.ExportToWkt(["FORMAT=WKT2_2018"])
