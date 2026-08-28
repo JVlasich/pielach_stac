@@ -1,11 +1,13 @@
 """Pipeline orchestration: sidecar load, idempotency gate, campaign loop, catalog write."""
 
 import fnmatch
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
 from itertools import chain
 from pathlib import Path
+from time import perf_counter
 
 import pystac
 import yaml
@@ -81,6 +83,20 @@ def _stored_file_fields(item, label: str):
     return size, mh[4:]
 
 
+_GATE_KEYS = ("patterns", "labels", "properties", "crs")
+
+
+def _sidecar_digest(sc: dict) -> str:
+    """sha256 over the sidecar keys that change item content. Raw values, before
+    merge_overrides normalizes its copies in place: the digest tracks the file, not code
+    behaviour. collection is collection-only; exclude and hierarchy already propagate,
+    since collections are rebuilt from scratch every run."""
+    payload = {k: sc.get(k) for k in _GATE_KEYS}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
 def _needs_rebuild(product, existing_item) -> bool:
     """Size shortcut, then sha256 confirm. A computed hash rides on the asset so
     build_item never hashes twice.
@@ -140,34 +156,52 @@ def process_campaign(
     folder ; path to the campaign folder
     policy ; RunPolicy for this run
     seen_ids ; {id: (kind, source)} from update_catalog(), mutated in place
-    Returns: {"rebuilt": n, "reused": n, "stale": n, "failed": n}
+    Returns: {"rebuilt": n, "reused": n, "stale": n, "failed": n, "seconds": {...}}
     Raises: missing campaign.yaml; item/subcollection id collision when
     policy.id_collisions == "raise", collection id collision always
     """
     folder = Path(folder)
+    t_start = perf_counter()
+    secs = {"discover": 0.0, "hash": 0.0, "build": 0.0}
+
+    def _counts(rebuilt=0, reused=0, stale=0, failed=0) -> dict:
+        return {"rebuilt": rebuilt, "reused": reused, "stale": stale, "failed": failed,
+                "seconds": {**{k: round(v, 2) for k, v in secs.items()},
+                            "total": round(perf_counter() - t_start, 2)}}
 
     try:
         sc = load_sidecar(folder / "campaign.yaml")
     except FileNotFoundError:
         sc = load_sidecar(folder / "campaign.yml")
 
+    digest = _sidecar_digest(sc)
     sp, lb = merge_overrides(sc.get("patterns"), sc.get("labels"))
 
     camp = campaign_date(folder.name)
     camp_id = (sc.get("collection") or {}).get("id") or f"{root.id}_{camp.isoformat()}"
     _register_id(seen_ids, camp_id, "collection", folder.name, policy.id_collisions)
 
+    t = perf_counter()
     products = discover(folder, policy, stem_patterns=sp, labels=lb,
                         id_prefix=camp_id, exclude=sc.get("exclude"))
+    secs["discover"] = perf_counter() - t
 
     if not products:
         log.warning(f"no products in {folder.name}, campaign {camp_id} untouched")
-        return {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 0}
+        return _counts()
 
     for p in products:
         _register_id(seen_ids, p.id, "item", folder.name, policy.id_collisions)
 
     old = root.get_child(camp_id)
+    # sidecar edits reach no data file, so the file gate alone would carry stale items over
+    stored_digest = (old.extra_fields or {}).get("sidecar:checksum") if old is not None else None
+    sidecar_changed = old is not None and stored_digest != digest
+    if sidecar_changed:
+        if stored_digest is None:  # catalog predates the gate: one full rebuild, then quiet
+            log.warning(f"no sidecar gate stored, rebuilding every item in {camp_id}")
+        else:
+            log.info(f"sidecar changed, rebuilding every item in {camp_id}")
     existing, parent_of = {}, {}
     if old:
         for i in old.get_items(recursive=True):
@@ -206,20 +240,25 @@ def process_campaign(
         products = kept
         if not products:
             log.warning(f"all products below minPoints in {folder.name}, campaign {camp_id} untouched")
-            return {"rebuilt": 0, "reused": 0, "stale": 0, "failed": 0}
+            return _counts()
 
     rebuilt = reused = 0
     rebuilt_ids: set[str] = set()   # feeds the subcollection thumbnail gate below
     failed_items = []
     for p in products:
         prev = existing.get(p.id)
-        if not policy.force and prev is not None and not _needs_rebuild(p, prev):
+        t = perf_counter()
+        reuse = (not policy.force and not sidecar_changed and prev is not None
+                 and not _needs_rebuild(p, prev))
+        secs["hash"] += perf_counter() - t
+        if reuse:
             p.item = prev.clone()
             reused += 1
             continue
         if not policy.dry_run:
             # created survives rebuilds, updated stamps in build_item
             created = prev.common_metadata.created if prev else None
+            t = perf_counter()
             try:
                 p.item = build_item(p, camp, created=created, properties=props,
                                     crs=sc.get("crs"))
@@ -227,6 +266,8 @@ def process_campaign(
                 log.exception(f"item failed, dropped from this run: {p.id}")
                 failed_items.append(p)
                 continue
+            finally:
+                secs["build"] += perf_counter() - t
             a0 = p.assets[0]
             if policy.thumbnails and thumb_jobs is not None and a0.thumbnail:
                 if a0.kind == "raster":
@@ -241,7 +282,7 @@ def process_campaign(
         products = [p for p in products if p not in failed_items]
         if not products:
             log.warning(f"all items failed in {folder.name}, campaign {camp_id} untouched")
-            return {"rebuilt": 0, "reused": reused, "stale": 0, "failed": len(failed_items)}
+            return _counts(reused=reused, failed=len(failed_items))
 
     stale_ids = sorted(set(existing) - {p.id for p in products})
     for sid in stale_ids:
@@ -252,12 +293,11 @@ def process_campaign(
         else:
             log.info(f"removed stale item: {sid}")
 
-    counts = {"rebuilt": rebuilt, "reused": reused, "stale": len(stale_ids),
-              "failed": len(failed_items)}
+    counts = (rebuilt, reused, len(stale_ids), len(failed_items))
     log.info(f"{camp_id}: {rebuilt} rebuilt, {reused} reused, {len(stale_ids)} stale, "
              f"{len(failed_items)} failed")
     if policy.dry_run:
-        return counts
+        return _counts(*counts)
 
     # kept-stale items stay exactly where they were: bucket clones by old parent id
     stale_clones: dict = {}
@@ -295,10 +335,11 @@ def process_campaign(
         children.append(build_collection(sub_id, meta, clones))
 
     camp_coll = build_collection(camp_id, sc.get("collection") or {}, flat_items, children)
+    camp_coll.extra_fields["sidecar:checksum"] = digest  # next run's sidecar half of the gate
     if old is not None:
         root.remove_child(camp_id)
     root.add_child(camp_coll)
-    return counts
+    return _counts(*counts)
 
 
 # --- catalog loop ---
@@ -393,12 +434,14 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
     policy ; RunPolicy for this run, passed unchanged to every campaign
 
     Returns: {"ok": {campaign: counts}, "failed": {campaign: error},
-    "stale_collections": [ids], "validation": None | "ok" | error};
-    also written to ./last_run.json (working directory)."""
+    "stale_collections": [ids], "validation": None | "ok" | error, "seconds": {...}};
+    also written to <out_dir>/last_run.json."""
     root, out_dir = Path(root), Path(out_dir)
+    t_start = perf_counter()
     cat = _load_or_create_root(out_dir)
 
     ok, failed, stale_colls, validation, fatal = {}, {}, [], None, None
+    secs = {"thumbnails": 0.0, "save": 0.0}
     warns = _WarnCollector()
     root_logger = logging.getLogger()
     root_logger.addHandler(warns)
@@ -457,6 +500,7 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
             if isinstance(cat, pystac.Collection):
                 cat.set_self_href(str(out_dir / "catalog.json"))  # stable root entry point (not collection.json)
             if policy.thumbnails:
+                t = perf_counter()
                 # pcl thumbnails need laspy
                 pcl_ok = pcl_thumbnails_available()
                 if not pcl_ok and (coll_thumb_jobs
@@ -483,6 +527,7 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
                             roles=["thumbnail"]))
                     except Exception as e:
                         log.warning(f"thumbnail failed for {coll.id}: {e}")
+                secs["thumbnails"] = perf_counter() - t
             if policy.asset_hrefs == "relative":
                 cat.make_all_asset_hrefs_relative()
             # thumbnails live inside the catalog tree: always relative, both href modes
@@ -491,7 +536,9 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
                     if "thumbnail" in (asset.roles or []):
                         asset.href = pystac.utils.make_relative_href(
                             asset.get_absolute_href(), obj.get_self_href())
+            t = perf_counter()
             cat.save(catalog_type=pystac.CatalogType.SELF_CONTAINED)
+            secs["save"] = perf_counter() - t
             log.info(f"catalog saved: {out_dir}")
             if policy.validate:
                 validation = _validate_catalog(cat)
@@ -500,20 +547,24 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
         raise
     finally:
         root_logger.removeHandler(warns)
+        secs = {k: round(v, 2) for k, v in secs.items()}
+        secs["total"] = round(perf_counter() - t_start, 2)
         res = {"ok": ok, "failed": failed, "stale_collections": stale_colls,
-               "validation": validation, "warnings": warns.msgs}
+               "validation": validation, "seconds": secs, "warnings": warns.msgs}
         if fatal:
             res["fatal"] = fatal
-        _write_report(res, dry_run=policy.dry_run, force=policy.force,
+        _write_report(res, out_dir, dry_run=policy.dry_run, force=policy.force,
                       only=policy.only, stale=policy.stale)
     return res
 
 
-def _write_report(res: dict, **knobs) -> None:
-    """Machine-readable run report in the working directory, overwritten each run (dry
-    runs included). Outside the catalog tree so crawlers ignore the non-STAC file."""
+def _write_report(res: dict, out_dir: Path, **knobs) -> None:
+    """Machine-readable run report next to the catalog, overwritten each run (dry runs
+    included). Not a STAC object, but it belongs to the catalog it describes; written to
+    the working directory it forked into one copy per directory a run was started in."""
     report = {"timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"), **knobs, **res}
-    path = Path.cwd() / "last_run.json"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "last_run.json"
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     log.debug(f"run report written: {path}")
 

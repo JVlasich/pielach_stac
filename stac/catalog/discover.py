@@ -5,6 +5,7 @@ emit one Product (= one future Item) per file, resolve cloud-native twins, mark 
 groups, attach sidecars. Unclassifiable files go through the unknown_assets policy.
 """
 
+import functools
 import logging
 import re
 import sys
@@ -12,18 +13,22 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
-from osgeo import gdal
-
 from ..core.registry import STEM_PATTERNS, LABELS, SIDECAR_EXTENSIONS
 from .policy import RunPolicy
 log = logging.getLogger(__name__)
 
-try:  # optional, (pip install gdal-utils on GDAL < 3.2)
-    from osgeo_utils.samples.validate_cloud_optimized_geotiff import validate as _validate_cog
-except ImportError:
-    _validate_cog = None
 
-gdal.UseExceptions()
+@functools.lru_cache(maxsize=1)
+def _gdal():
+    """(gdal, COG validator or None), imported on the first raster probe. Kept out of
+    module scope so importing stac.catalog does not require GDAL."""
+    from osgeo import gdal
+    gdal.UseExceptions()
+    try:  # optional, (pip install gdal-utils on GDAL < 3.2)
+        from osgeo_utils.samples.validate_cloud_optimized_geotiff import validate
+    except ImportError:
+        validate = None
+    return gdal, validate
 
 COG_MEDIA_TYPE = "image/tiff; application=geotiff; profile=cloud-optimized"
 
@@ -107,15 +112,17 @@ def match(filename, stem_patterns=STEM_PATTERNS) -> str | None:
 
 # --- cloud-native probe ---
 
-def _probe_cloud_native(path: Path, kind: str, ext: str) -> bool:
+def _probe_cloud_native(path: Path, kind: str, ext: str, invalid_cog: str = "demote") -> bool:
     """Pointcloud: ext == .copc.laz.
     Raster: GDAL reports LAYOUT=COG for COG-structured files, filename ignored. Detected
-    ones also run the full COG validator, advisory only (structural errors warn, stay
-    cloud-native). Unreadable rasters warn and count as non-cloud-native."""
+    ones also run the full COG validator; a structural error follows invalid_cog:
+    warn = keep cloud-native | demote = plain GeoTIFF (then the non_cloud_native policy
+    decides) | raise. Unreadable rasters warn and count as non-cloud-native."""
     if kind == "pcl":
         return ext == ".copc.laz"
     if kind != "raster":
         return False
+    gdal, validate_cog = _gdal()
     try:
         ds = gdal.Open(str(path))
     except RuntimeError as e:
@@ -123,10 +130,16 @@ def _probe_cloud_native(path: Path, kind: str, ext: str) -> bool:
         return False
     if ds.GetMetadataItem("LAYOUT", "IMAGE_STRUCTURE") != "COG":
         return False
-    if _validate_cog is not None:
-        _, errors, _ = _validate_cog(str(path))
+    if validate_cog is not None:
+        _, errors, _ = validate_cog(str(path))
         if errors:
-            log.warning(f"invalid COG ({path.name}): {'; '.join(errors)}")
+            msg = f"invalid COG ({path.name}): {'; '.join(errors)}"
+            if invalid_cog == "raise":
+                raise ValueError(msg)
+            if invalid_cog == "demote":
+                log.warning(f"{msg}; demoted to plain GeoTIFF")
+                return False
+            log.warning(msg)
     return True
 
 
@@ -288,7 +301,7 @@ def discover(folder: str | Path, policy: RunPolicy = RunPolicy(), *,
         if info["category"] == "ignore":
             log.debug(f"ignored ({label}): {f.name}")
             continue
-        cn = _probe_cloud_native(f, info["kind"], ext)
+        cn = _probe_cloud_native(f, info["kind"], ext, policy.invalid_cog)
         matches.append(_Match(f, label, info["category"], ext, info, cn))
 
     matches = _resolve_twins(matches, policy.non_cloud_native)

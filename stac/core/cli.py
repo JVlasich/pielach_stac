@@ -67,6 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Files matching no registry pattern (default: warn)")
     pol.add_argument("--nonCloudNative", type=str, choices=["warn", "skip", "raise"], default=None,
                      help="Files without a cloud-native twin: catalog with warning, drop, or abort (default: warn)")
+    pol.add_argument("--invalidCog", type=str, choices=["warn", "demote", "raise"], default=None,
+                     help="Rasters failing the COG structure validator: keep cloud-native with a "
+                          "warning, demote to plain GeoTIFF, or abort (default: demote)")
     pol.add_argument("--idCollisions", type=str, choices=["warn", "raise"], default=None,
                      help="Duplicate item/subcollection ids across campaigns: warn and keep the first "
                           "owner, or fail the campaign. Collection ids and collisions inside one "

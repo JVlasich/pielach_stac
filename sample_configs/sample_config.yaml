@@ -26,6 +26,7 @@ catalog:                   # python -m stac <root> [--config cfg.yaml]
   # stale: warn            # item/collection whose file vanished: warn keep | remove | raise
   # unknownAssets: warn    # file matches no registry pattern: warn | skip | raise
   # nonCloudNative: warn   # file with no COG/COPC twin: warn | skip | raise (skip = cloud-native-only catalog)
+  # invalidCog: demote    # raster fails the COG structure validator: warn keep | demote to plain GeoTIFF | raise
   # idCollisions: warn     # same item/subcollection id in two campaigns: warn keep first owner | raise.
   #                        # collection id, and any collision inside one campaign, always raises
 

@@ -18,6 +18,7 @@ _FIELD_MAP = {
     "validate":       "validate",
     "unknownAssets":  "unknown_assets",
     "nonCloudNative": "non_cloud_native",
+    "invalidCog":     "invalid_cog",
     "only":           "only",
     "idCollisions":   "id_collisions",
     "assetHrefs":     "asset_hrefs",
@@ -29,6 +30,7 @@ _ALLOWED = {
     "stale":            ("warn", "remove", "raise"),
     "unknown_assets":   ("warn", "skip", "raise"),
     "non_cloud_native": ("warn", "skip", "raise"),
+    "invalid_cog":      ("warn", "demote", "raise"),
     "id_collisions":    ("warn", "raise"),
     "asset_hrefs":      ("absolute", "relative"),
 }
@@ -44,6 +46,9 @@ class RunPolicy:
     validate: bool = False                               # STAC-validate after save (needs pystac[validation])
     unknown_assets: Literal["warn", "skip", "raise"] = "warn"    # unclassifiable files
     non_cloud_native: Literal["warn", "skip", "raise"] = "warn"  # files without a CN twin
+    # a COG failing the structure validator. media_type is the catalog's only cloud-native
+    # indicator, so demote publishes it as a plain GeoTIFF rather than let the type lie
+    invalid_cog: Literal["warn", "demote", "raise"] = "demote"
     only: str | None = None                              # glob over campaign dir names; skips the stale-collection sweep
     id_collisions: Literal["warn", "raise"] = "warn"     # duplicate item/subcollection ids across campaigns
     asset_hrefs: Literal["absolute", "relative"] = "absolute"  # relative (self-contained) | absolute (build-time paths)

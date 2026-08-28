@@ -17,6 +17,7 @@ from opals import Info
 from osgeo import gdal, ogr, osr
 
 from ..core.log import opals_log
+from .thumbnail import pcl_thumbnails_available
 
 osr.UseExceptions()
 gdal.UseExceptions()
@@ -26,16 +27,15 @@ log = logging.getLogger(__name__)
 # set by cli after config merge; nbThreads None = opals default (all CPUs)
 OPALS_INFO = {"nbThreads": None, "exactComputation": True}
 
-# footprint tuning. Ground units throughout, so every item filters the same regardless
-# of pixel count (a pixel-derived threshold makes a gap survive in one campaign and
-# vanish in the next, purely because the grids differ in size).
+# footprint tuning. Ground units throughout, so every item filters the same regardless of pixel count
 _FOOTPRINT_GRID = 2048    # px, longest edge of the working grid
 _MIN_PART_M2    = 4000.0  # footprint parts below this are mask noise
 _MIN_HOLE_M2    = 1000.0  # interior gaps below this are not represented
 _SIMPLIFY_M     = 6.0     # vertex tolerance; above a gap's radius the ring collapses
 _MIN_AREA_RATIO = 0.5     # footprint below this share of the valid area -> bbox rectangle
+_MIN_CELL_M     = 6.0     # floor for the point-cloud grid cell: below _SIMPLIFY_M the detail
 
-# what gdalinfo -hist reports, and what both raster v2.0.0 examples carry
+# what gdalinfo -hist reports
 _HIST_BUCKETS = 256
 
 
@@ -168,10 +168,7 @@ def _wgs84_footprint(srs, proj_bbox: list) -> tuple[dict, list]:
 
 def _drop_small_holes(poly, min_hole: float):
     """Rebuild a polygon: exterior ring plus only interior rings >= min_hole. Survivors
-    are the real data gaps, the whole point of publishing a footprint; slivers below the
-    threshold are mask noise that blows up the ring count. Held apart from the part
-    threshold: gaps are admitted much smaller than the outline pieces, so showing more
-    gaps never fragments the outline."""
+    are the real data gaps; slivers below the threshold are mask noise that blows up the ring count."""
     out = ogr.Geometry(ogr.wkbPolygon)
     out.AddGeometry(poly.GetGeometryRef(0).Clone())  # exterior ring
     for i in range(1, poly.GetGeometryCount()):
@@ -206,28 +203,17 @@ def _decimated_mask(band, w: int, h: int, k: int):
     return out
 
 
-def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dict, list] | None:
-    """True data footprint from band 1's mask (nodata/alpha/internal): decimated read,
-    polygonize, filter, simplify, reproject to WGS84. The interior rings are the real
-    data gaps, what makes this worth publishing over the bbox.
-    Returns (geometry, bbox), or None when the raster is fully valid, the mask gives
-    nothing usable, or the result covers less than _MIN_AREA_RATIO of the actual valid
-    area — caller keeps the bbox rectangle."""
-    band = ds.GetRasterBand(1)
-    if band.GetMaskFlags() == gdal.GMF_ALL_VALID:
-        return None
-    k = max(1, -(-max(w, h) // _FOOTPRINT_GRID))
-    valid = _decimated_mask(band, w, h, k)
-    if valid is None or valid.all() or not valid.any():
-        return None  # rectangle is the truth / mask degenerate
-    bh, bw = valid.shape
-
-    mem = gdal.GetDriverByName("MEM").Create("", bw, bh, 1, gdal.GDT_Byte)
-    mem.SetGeoTransform((gt[0], gt[1] * k, gt[2] * k, gt[3], gt[4] * k, gt[5] * k))
+def _grid_footprint(valid, gt, srs) -> tuple[dict, list, float] | None:
+    """Boolean occupancy grid + its geotransform -> (WGS84 geometry, WGS84 bbox, area in
+    the grid's ground units). Sieve, polygonize, drop small holes, simplify, reproject.
+    None when nothing survives the filters. The area is what the raster caller checks its
+    ratio against; a point cloud has no reference area and ignores it."""
+    mem = gdal.GetDriverByName("MEM").Create("", valid.shape[1], valid.shape[0], 1, gdal.GDT_Byte)
+    mem.SetGeoTransform(gt)
     mem.GetRasterBand(1).WriteArray(valid.astype("uint8") * 255)
-    # drop speckle before polygonizing, where it is cheap: a noisy mask otherwise yields
+    # drop speckle before polygonizing, where it is cheap: a noisy grid otherwise yields
     # thousands of sliver polygons every later step has to carry
-    cell_m2 = abs(gt[1] * gt[5]) * k * k
+    cell_m2 = abs(gt[1] * gt[5])
     gdal.SieveFilter(mem.GetRasterBand(1), None, mem.GetRasterBand(1),
                      max(1, int(min(_MIN_PART_M2, _MIN_HOLE_M2) / cell_m2)), 4)
 
@@ -247,22 +233,66 @@ def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dic
     geom = geom.SimplifyPreserveTopology(_SIMPLIFY_M)
     if geom is None or geom.IsEmpty():
         return None
-
-    # a footprint that lost most of the data is worse than none: a sparse mask shatters
-    # into parts that all fall under _MIN_PART_M2, and the remnant would be published
-    # as the whole truth
-    exact_m2 = valid_frac * w * h * abs(gt[1] * gt[5])
-    if exact_m2 and geom.GetArea() < _MIN_AREA_RATIO * exact_m2:
-        log.warning(f"footprint covers {geom.GetArea() / exact_m2:.0%} of the valid data, "
-                    f"keeping bbox rectangle: {ds.GetDescription()}")
-        return None
+    area_m2 = geom.GetArea()
 
     wgs84 = osr.SpatialReference()
     wgs84.ImportFromEPSG(4326)
     wgs84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     geom.Transform(osr.CoordinateTransformation(srs, wgs84))
     minx, maxx, miny, maxy = geom.GetEnvelope()
-    return json.loads(geom.ExportToJson()), [minx, miny, maxx, maxy]
+    return json.loads(geom.ExportToJson()), [minx, miny, maxx, maxy], area_m2
+
+
+def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dict, list] | None:
+    """True data footprint from band 1's mask (nodata/alpha/internal): decimated read,
+    polygonize, filter, simplify, reproject to WGS84.
+    Returns (geometry, bbox), or None """
+    band = ds.GetRasterBand(1)
+    if band.GetMaskFlags() == gdal.GMF_ALL_VALID:
+        return None
+    k = max(1, -(-max(w, h) // _FOOTPRINT_GRID))
+    valid = _decimated_mask(band, w, h, k)
+    if valid is None or valid.all() or not valid.any():
+        return None  # rectangle is the truth / mask degenerate
+    fp = _grid_footprint(valid, (gt[0], gt[1] * k, gt[2] * k, gt[3], gt[4] * k, gt[5] * k), srs)
+    if fp is None:
+        return None
+    geometry, bbox, area_m2 = fp
+
+    # a footprint that lost most of the data is worse than none: a sparse mask shatters
+    # into parts that all fall under _MIN_PART_M2, and the remnant would be published
+    # as the whole truth
+    exact_m2 = valid_frac * w * h * abs(gt[1] * gt[5])
+    if exact_m2 and area_m2 < _MIN_AREA_RATIO * exact_m2:
+        log.warning(f"footprint covers {area_m2 / exact_m2:.0%} of the valid data, "
+                    f"keeping bbox rectangle: {ds.GetDescription()}")
+        return None
+    return geometry, bbox
+
+
+def _pcl_footprint(path, proj_bbox: list, srs) -> tuple[dict, list] | None:
+    """True footprint of a COPC cloud: coarse octree levels binned into an occupancy grid,
+    then the same tail the raster mask runs through."""
+    import numpy as np
+    from laspy import CopcReader
+
+    xmin, ymin, xmax, ymax = proj_bbox
+    cell = max(max(xmax - xmin, ymax - ymin) / _FOOTPRINT_GRID, _MIN_CELL_M)
+    with CopcReader.open(str(path)) as reader:
+        # stops descending the octree once node spacing is finer than cell: a few MB read
+        # whatever the file weighs, at exactly the resolution the grid can represent
+        pts = reader.query(resolution=cell)
+    if len(pts) == 0:
+        return None
+
+    nx = max(1, math.ceil((xmax - xmin) / cell))
+    ny = max(1, math.ceil((ymax - ymin) / cell))
+    ix = np.clip(((np.asarray(pts.x) - xmin) / cell).astype(int), 0, nx - 1)
+    iy = np.clip(((ymax - np.asarray(pts.y)) / cell).astype(int), 0, ny - 1)
+    occupied = np.zeros((ny, nx), dtype=bool)
+    occupied[iy, ix] = True  # one point per cell; the query returns about that density
+    fp = _grid_footprint(occupied, (xmin, cell, 0.0, ymax, 0.0, -cell), srs)
+    return fp[:2] if fp else None
 
 
 def _fallback_srs(crs: str, path) -> "osr.SpatialReference":
@@ -274,15 +304,13 @@ def _fallback_srs(crs: str, path) -> "osr.SpatialReference":
         srs.SetFromUserInput(str(crs))
     except RuntimeError as e:
         raise ValueError(f"{path}: invalid sidecar crs {crs!r}: {e}\n expected: (EPSG:xxxx or WKT)") from e
+    # this fixes gdal issue switching (easting, northing)
+    srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     return srs
 
 
 def _histogram(band, minimum: float | None, maximum: float | None, path: str) -> dict | None:
-    """Exact value distribution over the valid pixels, gdalinfo -hist conventions: the edges are
-    padded half a bucket so the data min/max land on the first/last bucket centre. GetHistogram's
-    python defaults are byte-oriented (min=-0.5, max=255.5) and approximate, so nothing is implicit.
-    A constant band has no range to bin, and GDAL 3.1.2 answers that case by putting every pixel in
-    bucket 0 and reporting success, so this guard is the only thing catching it (3.5 raises).
+    """Exact value distribution over the valid pixels using gdalinfo -hist.
     Returns: the STAC Histogram Object, where "count" is the bucket count - not the pixel count
     the statistics "count" means."""
     if minimum is None or maximum is None or not maximum > minimum:
@@ -444,6 +472,8 @@ def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
         srs = osr.SpatialReference()
         if srs.ImportFromWkt(wkt) != 0:
             raise ValueError(f"{path}: invalid CRS WKT")
+        # easting-first, as the coordinates are (see _fallback_srs)
+        srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     elif crs:
         srs = _fallback_srs(crs, path)
         wkt = srs.ExportToWkt(["FORMAT=WKT2_2018"])
@@ -465,11 +495,24 @@ def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
     proj_bbox = [bb[0], bb[1], bb[3], bb[4]]
     geometry, bbox_wgs84 = _wgs84_footprint(srs, proj_bbox)
 
+    fp = None
+    if not str(path).lower().endswith(".copc.laz"):
+        log.info(f"not COPC, geometry stays the bbox rectangle: {path}")
+    elif not pcl_thumbnails_available():
+        log.warning(f"laspy/lazrs unavailable, geometry stays the bbox rectangle: {path}")
+    else:
+        try:
+            fp = _pcl_footprint(path, proj_bbox, srs)
+        except Exception as e:
+            log.warning(f"footprint failed, keeping bbox rectangle ({path}): {e}")
+    if fp:
+        geometry, bbox_wgs84 = fp
+
     density = stats.getPointDensity()
     return AssetMeta(
         pc_count=stats.getPointCount(),
         pc_density=None if math.isnan(density) else density,  # nan when exactComputation off
-        pc_type="lidar", # hmmmmmm hardcoding
+        pc_type="lidar",  # sidecar properties override it, e.g. "pc:type": dim
         pc_schemas=schemas,
         pc_statistics=statistics, # gpstime duplicate here
         pc_gps_time_min=gps["minimum"] if gps else None,

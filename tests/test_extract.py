@@ -36,6 +36,40 @@ def test_crs_fallback(tmp_path, write_tif, write_tif_no_crs):
         raster(tmp_path / "bare.tif", crs="EPSG:nonsense")
 
 
+def test_srs_from_wkt_and_sidecar_keep_easting_first(tmp_path, write_tif, write_tif_no_crs):
+    """EPSG:31256 declares northing as its first axis. GDAL applies traditional
+    (easting-first) order only to a dataset's own SRS, so the WKT and sidecar paths have
+    to set it themselves - otherwise the transform reads the easting as a northing and
+    the item lands ~500 km southeast of the campaign."""
+    import laspy
+    import numpy as np
+    from laspy.vlrs.known import WktCoordinateSystemVlr
+
+    from stac.catalog.extract import pointcloud
+
+    # the file's own CRS: GDAL hands this one over easting-first already
+    write_tif(tmp_path / "georef.tif", 10)
+    reference = raster(tmp_path / "georef.tif").bbox_wgs84
+    assert (15.6 < reference[0] < 15.7) and (48.1 < reference[1] < 48.3), reference
+
+    # same grid, CRS from the sidecar instead
+    write_tif_no_crs(tmp_path / "bare.tif")
+    assert raster(tmp_path / "bare.tif", crs="EPSG:31256").bbox_wgs84 == pytest.approx(reference)
+
+    # same extent as a point cloud carrying the CRS as a WKT VLR
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(31256)
+    header = laspy.LasHeader(point_format=6, version="1.4")
+    header.global_encoding.wkt = True
+    header.vlrs.append(WktCoordinateSystemVlr(srs.ExportToWkt()))
+    las = laspy.LasData(header)
+    las.x = np.array([-53000.0, -52900.0, -53000.0, -52900.0])
+    las.y = np.array([339900.0, 339900.0, 340000.0, 340000.0])
+    las.z = np.zeros(4)
+    las.write(str(tmp_path / "corners.las"))
+    assert pointcloud(tmp_path / "corners.las").bbox_wgs84 == pytest.approx(reference)
+
+
 def test_mask_footprint_shrinks_geometry(tmp_path, write_tif, write_masked_tif):
     write_tif(tmp_path / "full.tif", 10, 64)
     write_masked_tif(tmp_path / "masked.tif")

@@ -33,9 +33,13 @@ collection:
 properties:
   instruments: [riegl-vq-880-gii]
   platform: airborne
+  # "pc:type": sonar         # extracted keys can be overwritten by setting them here;
+                             # point clouds are extracted as lidar
   byLabel:
     orthophoto:
       instruments: null        # a camera product, so the scanner does not apply
+    # pointcloud_copc:
+    #   "pc:type": sonar       # same override, point-cloud items only
   byId:
     pielach_2024-10-09_DTM_masked_etrs89:
       title: DTM 2024-10-09, water surface masked   # overrides the generated item title

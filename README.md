@@ -60,6 +60,7 @@ Key options (CLI > YAML config > defaults):
 | `--stale warn\|remove\|raise` | items/collections whose files vanished from disk |
 | `--unknownAssets warn\|skip\|raise` | files matching no registry pattern |
 | `--nonCloudNative warn\|skip\|raise` | files without a cloud-native twin |
+| `--invalidCog warn\|demote\|raise` | rasters failing the COG structure validator (demote = publish as plain GeoTIFF) |
 | `--idCollisions warn\|raise` | duplicate ids across campaigns |
 | `--assetHrefs relative\|absolute` | asset href style (thumbnails always relative) |
 | `--thumbnails / --no-thumbnails` | PNG thumbnails for raster + COPC items |
