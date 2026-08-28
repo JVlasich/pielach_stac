@@ -11,7 +11,7 @@ from pystac.extensions.pointcloud import PointcloudExtension, Schema, SchemaType
 from pystac.extensions.projection import ProjectionExtension
 
 from ..core.registry import SIDECAR_EXTENSIONS
-from .extract import _readers
+from .extract import file_meta, readers
 
 import logging
 log = logging.getLogger(__name__)
@@ -252,8 +252,8 @@ def build_item(product, campaign: date, *, created: datetime | None = None,
     """
     extracted = []
     for a in product.assets:
-        meta = _readers[a.kind](a.path, crs=crs)
-        fm = a.file_meta or _readers["file_meta"](a.path)
+        meta = readers[a.kind](a.path, crs=crs)
+        fm = a.file_meta or file_meta(a.path)
         extracted.append((a, meta, fm))
 
     # baseline from the first asset (single-asset products today)

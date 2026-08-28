@@ -1,6 +1,5 @@
 """Render a downscaled PNG thumbnail for a raster item (ortho RGB / DSM-DTM hillshade)."""
 
-import functools
 import logging
 from pathlib import Path
 
@@ -11,18 +10,6 @@ log = logging.getLogger(__name__)
 
 MAX_EDGE = 512  # longest thumbnail edge in px
 HS_EDGE = 1024  # render hillshade at this res, then downscale to MAX_EDGE
-
-
-@functools.lru_cache(maxsize=1)  # probed once per run
-def pcl_thumbnails_available() -> bool:
-    """True when laspy + lazrs import here (both vendored in libs/: linux cp310 .so and
-    win_amd64 .pyd). Gates every laspy-backed step, thumbnails and COPC footprints alike."""
-    try:
-        import laspy  # noqa: F401
-        import lazrs  # noqa: F401
-        return True
-    except Exception:
-        return False
 
 
 def _data_window(band, sw: int, sh: int) -> list[int]:

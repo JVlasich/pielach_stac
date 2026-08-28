@@ -16,8 +16,8 @@ from typing import Any, Callable
 from opals import Info
 from osgeo import gdal, ogr, osr
 
+from ..core.capabilities import laspy_available
 from ..core.log import opals_log
-from .thumbnail import pcl_thumbnails_available
 
 osr.UseExceptions()
 gdal.UseExceptions()
@@ -500,7 +500,7 @@ def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
     fp = None
     if not str(path).lower().endswith(".copc.laz"):
         log.info(f"not COPC, geometry stays the bbox rectangle: {path}")
-    elif not pcl_thumbnails_available():
+    elif not laspy_available():
         log.warning(f"laspy/lazrs unavailable, geometry stays the bbox rectangle: {path}")
     else:
         try:
@@ -564,10 +564,9 @@ def pcl_point_count(p: Path | str) -> int:
 
 
 # kind → fn(path, needed_exts) -> AssetMeta (I/O once, gated)
-_readers: dict[str, Callable] = {
+readers: dict[str, Callable] = {
     "raster": raster,
     "pcl": pointcloud,
-    "file_meta":file_meta
 }
 
 

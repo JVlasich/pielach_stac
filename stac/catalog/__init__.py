@@ -10,5 +10,5 @@
 #    one Item per Product; enable extensions; build ids/datetime/geometry
 #    placement resolver: Product → flat node / group nodes
 #         ▼
-# Layer 3  Catalog manager   (manager.py)
+# Layer 3  Catalog manager   (manager.py, thumbnail.py)
 #    load existing → gate by id (size+hash) → build/reuse → stale sweep → write

@@ -13,14 +13,14 @@ import pystac
 import yaml
 
 from ..core import config
+from ..core.capabilities import laspy_available
 from ..core.registry import merge_overrides
 from .build import build_collection, build_item, campaign_date
 from .discover import discover, qualify_id
 from .extract import file_meta, pcl_point_count
 from .hierarchy import resolve_hierarchy
 from .policy import RunPolicy
-from .thumbnail import (pcl_thumbnails_available, render_collection_thumbnail,
-                        render_thumbnail)
+from .thumbnail import render_collection_thumbnail, render_thumbnail
 
 log = logging.getLogger(__name__)
 
@@ -503,7 +503,7 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
             if policy.thumbnails:
                 t = perf_counter()
                 # pcl thumbnails need laspy
-                pcl_ok = pcl_thumbnails_available()
+                pcl_ok = laspy_available()
                 if not pcl_ok and (coll_thumb_jobs
                                    or any(k == "pointcloud" for *_, k in thumb_jobs)):
                     log.warning("laspy/lazrs unavailable; skipping point-cloud thumbnails")
