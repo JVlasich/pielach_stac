@@ -5,7 +5,7 @@ per subcollection group. Starts from discover's auto tile groups (product.group)
 then applies the sidecar hierarchy block:
   placement: {product_id: group_name | ~}   pin into a group / force flat
   groups:    {group_name: {title, description}}   subcollection metadata
-Pure, no pystac.
+no pystac import.
 """
 
 import logging

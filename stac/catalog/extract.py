@@ -146,7 +146,7 @@ def _json_nodata(v):
 
 
 def _wgs84_footprint(srs, proj_bbox: list) -> tuple[dict, list]:
-    """Native CRS bbox -> WGS84 (GeoJSON polygon, bbox) via densified edge transform:
+    """Native CRS bbox -> WGS84 (GeoJSON polygon, bbox) via densified edge transform bc
     bundled GDAL 3.1 has no TransformBounds (3.4+)."""
     wgs84 = osr.SpatialReference()
     wgs84.ImportFromEPSG(4326)
@@ -181,12 +181,13 @@ def _drop_small_holes(poly, min_hole: float):
 
 
 def _decimated_mask(band, w: int, h: int, k: int):
-    """Band 1's mask reduced by k on both axes: a cell is valid when >= 50% of its source
-    pixels are. Read at full resolution in row strips (k * w bytes at a time), not via
-    buf_xsize: a buffered read comes from the COG overviews, whose resampling marks a cell
-    valid if *any* source pixel is and dilates the footprint by up to 3x. Trailing pixels
-    zero-pad, so the last row and column of cells need a full half-cell of data -- an edge
-    effect well below the simplify tolerance. None when the mask cannot be read."""
+    """Calltrace: raster() -> _mask_footprint() -> _decimated_mask()
+    Band 1's mask coarsened by k on both axes: a cell is valid when >= 50% of its
+    source pixels are.
+
+    returns:
+      np.ndarray | None
+    """
     import numpy as np
     mask = band.GetMaskBand()
     bw, bh = -(-w // k), -(-h // k)
@@ -194,9 +195,12 @@ def _decimated_mask(band, w: int, h: int, k: int):
     buf = np.zeros((k, bw * k), dtype=bool)
     for row in range(bh):
         y0 = row * k
+        # full-resolution strips, not buf_xsize: buffered read comes from COG
+        # overviews -> would mark cell valid if *any* source pixel is
         strip = mask.ReadAsArray(0, y0, w, min(k, h - y0))
         if strip is None:
             return None
+        # trailing pixels zero-pad
         buf[:] = False
         buf[:strip.shape[0], :w] = strip > 0
         out[row] = buf.reshape(k, bw, k).mean(axis=(0, 2)) >= 0.5
@@ -204,23 +208,30 @@ def _decimated_mask(band, w: int, h: int, k: int):
 
 
 def _grid_footprint(valid, gt, srs) -> tuple[dict, list, float] | None:
-    """Boolean occupancy grid + its geotransform -> (WGS84 geometry, WGS84 bbox, area in
-    the grid's ground units). Sieve, polygonize, drop small holes, simplify, reproject.
-    None when nothing survives the filters. The area is what the raster caller checks its
-    ratio against; a point cloud has no reference area and ignores it."""
+    """Turns a boolean occupancy grid into a published footprint: sieve
+    speckle, polygonize, throw out small parts and small holes, simplify,
+    reproject to WGS84. Used for pcl and raster
+    
+    args:
+      valid - mask bool grid array
+      gt    - tuple[6] geotransformation of valid
+      srs   - osr.SpatialReference
+
+    returns:
+      tuple (GeoJSON geometry, [minx, miny, maxx, maxy], area) | None
+      """
     mem = gdal.GetDriverByName("MEM").Create("", valid.shape[1], valid.shape[0], 1, gdal.GDT_Byte)
     mem.SetGeoTransform(gt)
     mem.GetRasterBand(1).WriteArray(valid.astype("uint8") * 255)
-    # drop speckle before polygonizing, where it is cheap: a noisy grid otherwise yields
-    # thousands of sliver polygons every later step has to carry
+    # drop speckle before polygonizing, cheaper here:
+    # noisy grid yields thousand polygons otherwhise
     cell_m2 = abs(gt[1] * gt[5])
     gdal.SieveFilter(mem.GetRasterBand(1), None, mem.GetRasterBand(1),
                      max(1, int(min(_MIN_PART_M2, _MIN_HOLE_M2) / cell_m2)), 4)
 
     vds = ogr.GetDriverByName("Memory").CreateDataSource("")
     lyr = vds.CreateLayer("footprint", srs=srs)
-    # mask arg = the band itself, so only valid regions become polygons. Polygonize
-    # already emits one polygon per connected region, gaps as interior rings: the
+    # mask arg = the band itself, so only valid regions become polygons
     # parts need no union afterwards.
     gdal.Polygonize(mem.GetRasterBand(1), mem.GetRasterBand(1), lyr, -1)
     geom = ogr.Geometry(ogr.wkbMultiPolygon)
@@ -246,7 +257,17 @@ def _grid_footprint(valid, gt, srs) -> tuple[dict, list, float] | None:
 def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dict, list] | None:
     """True data footprint from band 1's mask (nodata/alpha/internal): decimated read,
     polygonize, filter, simplify, reproject to WGS84.
-    Returns (geometry, bbox), or None """
+    If lost too much valid data refuse result and keep bbox
+
+    args:
+      ds  - gdal dataset
+      gt  - geotransformation tuple at full res
+      srs - osr.Spatialreference
+      w,h - full res pixel dimensions
+      valid_frac - share of valid pixels, 0-1
+    returns:
+      (geometry: dict, bbox: list) | None
+    """
     band = ds.GetRasterBand(1)
     if band.GetMaskFlags() == gdal.GMF_ALL_VALID:
         return None
@@ -259,9 +280,7 @@ def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dic
         return None
     geometry, bbox, area_m2 = fp
 
-    # a footprint that lost most of the data is worse than none: a sparse mask shatters
-    # into parts that all fall under _MIN_PART_M2, and the remnant would be published
-    # as the whole truth
+    # a footprint that lost most of the data is worse than none
     exact_m2 = valid_frac * w * h * abs(gt[1] * gt[5])
     if exact_m2 and area_m2 < _MIN_AREA_RATIO * exact_m2:
         log.warning(f"footprint covers {area_m2 / exact_m2:.0%} of the valid data, "
@@ -272,15 +291,15 @@ def _mask_footprint(ds, gt, srs, w: int, h: int, valid_frac: float) -> tuple[dic
 
 def _pcl_footprint(path, proj_bbox: list, srs) -> tuple[dict, list] | None:
     """True footprint of a COPC cloud: coarse octree levels binned into an occupancy grid,
-    then the same tail the raster mask runs through."""
+    then routed to same function rasters use.
+    Uses laspy's copc reader to avoid reading the whole mask again, opals no copc reader"""
     import numpy as np
     from laspy import CopcReader
 
     xmin, ymin, xmax, ymax = proj_bbox
     cell = max(max(xmax - xmin, ymax - ymin) / _FOOTPRINT_GRID, _MIN_CELL_M)
     with CopcReader.open(str(path)) as reader:
-        # stops descending the octree once node spacing is finer than cell: a few MB read
-        # whatever the file weighs, at exactly the resolution the grid can represent
+        # stops descending the octree once node spacing is finer than cell
         pts = reader.query(resolution=cell)
     if len(pts) == 0:
         return None
@@ -311,8 +330,10 @@ def _fallback_srs(crs: str, path) -> "osr.SpatialReference":
 
 def _histogram(band, minimum: float | None, maximum: float | None, path: str) -> dict | None:
     """Exact value distribution over the valid pixels using gdalinfo -hist.
-    Returns: the STAC Histogram Object, where "count" is the bucket count - not the pixel count
-    the statistics "count" means."""
+    returns:
+      dict of the STAC Histogram Object
+    """
+    #  "count" is the bucket count, not the pixel count
     if minimum is None or maximum is None or not maximum > minimum:
         log.warning(f"histogram skipped, no usable value range: {path}")
         return None
@@ -325,12 +346,16 @@ def _histogram(band, minimum: float | None, maximum: float | None, path: str) ->
 
 
 def raster(path: str, crs: str | None = None) -> AssetMeta:
-    """Raster metadata via GDAL.
-    Item datetime is campaign-driven, not read here; TIFFTAG_DATETIME is kept only as
-    the processing timestamp. Band statistics are exact (full scan).
-    geometry = mask-derived footprint, bbox rectangle fallback.
-    crs = sidecar fallback, only consulted when the file has none.
-    Returns: AssetMeta"""
+    """Reader for raster metadata via GDAL, extracts:
+    per-band statistics (exact, full scan), nodata, colour interpretation,
+    scale/offset, an optional histogram, native and WGS84 bboxes,
+    and mask-derived footprint.
+    
+    returns:
+      AssetMeta object
+    """
+    # Item datetime is campaign-driven, not read here;
+    # TIFFTAG_DATETIME is kept as processing timestamp
     log.debug(f"extracting raster metadata: {path}")
     ds = gdal.Open(str(path))
 
@@ -356,8 +381,7 @@ def raster(path: str, crs: str | None = None) -> AssetMeta:
             frac = b.GetMaskBand().ComputeStatistics(False)[2] / 255.0
             valid_percent, count = round(frac * 100, 4), round(frac * w * h)
         nbits = b.GetMetadataItem("NBITS", "IMAGE_STRUCTURE")
-        # single band only: the registry decides which products publish one, this decides who
-        # pays for it - a multi-band ortho would buy a distribution per band and never use it
+        # histograms for single band only
         hist = _histogram(b, minimum, maximum, path) if ds.RasterCount == 1 else None
         bands.append({
             "index":        i,
@@ -415,7 +439,7 @@ def raster(path: str, crs: str | None = None) -> AssetMeta:
 
 
 def _attr_name(a) -> str:
-    """getName() returns "Shortname (Longname)"; the longname separates dims sharing a
+    """Opals info getName() returns "Shortname (Longname)"; the longname separates dims sharing a
     shortname (e.g. two Amplitudes). Whole string when no parens."""
     full = a.getName()
     m = re.search(r"\((.*)\)\s*$", full)
@@ -423,10 +447,16 @@ def _attr_name(a) -> str:
 
 
 def pointcloud(path: str, crs: str | None = None) -> AssetMeta:
-    """Pointcloud metadata via opalsInfo.
+    """Reader for pointcloud metadata using opalsInfo, extracts:
+    count, density, per-dimension statistics and schemas,
+    raw GPSTime range, CRS, and a COPC-derived footprint.
+
     Attributes only extracted when they carry more than one value.
     crs = sidecar fallback, only consulted when the file has none.
-    Returns: AssetMeta"""
+
+    returns:
+      AssetMeta object
+    """
     log.debug(f"extracting pointcloud metadata: {path}")
     inf = Info.Info()
     inf.inFile = str(path)
@@ -555,9 +585,10 @@ def file_meta(p: Path | str) -> FileMeta:
 
 
 def pcl_point_count(p: Path | str) -> int:
-    """Point count from the LAS public header, uncompressed in .las/.laz/.copc.laz alike
-    (no point decompression, ~7 ms). Lets minPoints drop degenerate tiles before the
-    expensive opals build."""
+    """Point count from the LAS public header.
+    Lets minPoints drop small tiles before the
+    expensive opalsInfo exactComputation"""
+    # TODO: could also be achieved with fixed opalsinfo exact 0 but need laspy otherwhere anyways
     import laspy
     with laspy.open(str(p)) as r:
         return r.header.point_count
@@ -575,6 +606,7 @@ readers: dict[str, Callable] = {
 
 
 # --- self-check ---
+# python -m <this script> <target file> to test extract metadata
 
 if __name__ == "__main__":
     import sys

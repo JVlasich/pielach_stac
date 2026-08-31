@@ -147,7 +147,7 @@ def test_new_product_type_from_sidecar_only(tmp_path, write_tif):
         "    stac_roles: [data]\n"
         "    media_type: image/tiff; application=geotiff\n"
         "    extensions: [bands, projection, file]\n"
-        "    thumbnail: false\n",
+        "    thumbnail: null\n",
         encoding="utf-8")
 
     res = update_catalog(tmp_path, out, RunPolicy())
@@ -362,6 +362,26 @@ def test_update_catalog_staged_idempotency(tmp_path, write_tif, monkeypatch):
     assert cat.get_child("catalog_2023-02-08") is None
 
 
+def test_failed_campaign_queues_no_thumbnails(tmp_path, write_tif):
+    """Thumbnail jobs are per-campaign locals: a campaign that raises after building items
+    drops them. Those items never reach the tree, so rendering would only warn on a
+    missing href and put that noise in the run report."""
+    out = tmp_path / "catalog"
+    camp = tmp_path / "2024-10-09"
+    camp.mkdir()
+    write_tif(camp / "pielach_2024-10-09_dtm_etrs89.tif", 10)
+    write_tif(camp / "pielach_2024-10-09_dsm_etrs89.tif", 20)
+    (camp / "campaign.yaml").write_text("", encoding="utf-8")
+    update_catalog(tmp_path, out, RunPolicy())
+
+    # one item rebuilds and queues its thumbnail, then the stale sweep raises on the other
+    write_tif(camp / "pielach_2024-10-09_dtm_etrs89.tif", 99)
+    (camp / "pielach_2024-10-09_dsm_etrs89.tif").unlink()
+    res = update_catalog(tmp_path, out, RunPolicy(stale="raise"))
+    assert "stale item" in res["failed"]["2024-10-09"], res
+    assert not [w for w in res["warnings"] if "thumbnail failed" in w], res["warnings"]
+
+
 def _coll_asset_href(out: Path, coll_id: str, key: str) -> str:
     """The on-disk href of a collection-level asset."""
     cj = next(p for p in out.rglob("collection.json") if p.parent.name == coll_id)
@@ -389,7 +409,7 @@ def test_tiled_pcl_subcollection_thumbnail(tmp_path, write_las, monkeypatch):
     def _prod(path):
         a = Asset(path=path, label="pointcloud_copc", category="pointcloud", kind="pcl",
                   stac_roles=["data"], media_type="application/vnd.laszip+copc",
-                  extensions=[], cloud_native=True, thumbnail=True)
+                  extensions=[], cloud_native=True, thumbnail="pointcloud")
         return Product(id=path.stem, category="pointcloud", kind="pcl", assets=[a],
                        group="pielach_2024-10-09_tiles")
 

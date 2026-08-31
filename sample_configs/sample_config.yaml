@@ -1,81 +1,90 @@
 # Tool config template. Every value shown = built-in default; uncomment to change.
 # Precedence: CLI > this file > defaults.
-# One file hold all namespaces: each tool read own section, ignore rest quietly.
-# `python -m stac.utils.gen_full_template cfg.yaml` writes bare version of this.
+# One file holds all namespaces: each tool reads its own section, ignores the rest
+# `turnstac-template cfg.yaml` writes a bare version of this.
 
-catalog:                   # python -m stac <root> [--config cfg.yaml]
 
-  # -- root catalog identity --
+# =============================================================================
+#  CATALOG BUILD                    turnstac <root> [--config cfg.yaml]
+# =============================================================================
+
+catalog:
+
+  # ---- common ----
+
   # id: pielach
   # title: Pielach River Topo-Bathymetric LiDAR Time Series
   # description: Automated STAC catalog of the processed Pielach campaign datasets.
 
-  # -- paths --
-  # root: null             # processed-datasets root holding campaign dirs; CLI positional beat it
+  # root: null             # processed-datasets root holding the campaign dirs;
+  #                        # the CLI positional beats it
   # out: null              # catalog output dir (default: <root>/catalog)
 
-  # -- what gets built --
-  # only: null             # glob over campaign dir names, e.g. "202[45]-*"; skip stale-collection sweep
-  # force: false           # ignore idempotency gate, rebuild every item; use after registry/code change,
-  #                        # best paired with only
-  # thumbnails: true       # PNG thumbnail per raster item + per tiled point-cloud subcollection
-  # minPoints: 1000        # drop point-cloud item below this pc:count
-  # assetHrefs: absolute   # relative = catalog travels with data; thumbnail href always relative
+  # only: null             # glob over campaign dir names, e.g. "202[45]-*";
+  #                        # processes only those campaigns
+  # force: false           # ignore the idempotency gate, rebuild every item; use after a
+  #                        # registry/code change, best paired with only
+  # thumbnails: true       # generate thumbnails for labels who declare it
 
-  # -- policy: disk doesnt match expectation --
-  # stale: warn            # item/collection whose file vanished: warn keep | remove | raise
+  # --- advanced --------------------------------------------------------------
+  # --- policies for when disk does not match expectation
+  # stale: warn            # item/collection whose file vanished: warn | remove | raise
   # unknownAssets: warn    # file matches no registry pattern: warn | skip | raise
-  # nonCloudNative: warn   # file with no COG/COPC twin: warn | skip | raise (skip = cloud-native-only catalog)
-  # invalidCog: demote    # raster fails the COG structure validator: warn keep | demote to plain GeoTIFF | raise
-  # idCollisions: warn     # same item/subcollection id in two campaigns: warn keep first owner | raise.
-  #                        # collection id, and any collision inside one campaign, always raises
+  # nonCloudNative: warn   # file with no COG/COPC twin: warn | skip | raise
+  #                        # (skip = cloud-native-only catalog)
+  # invalidCog: demote     # raster fails the COG structure validator: warn keep |
+  #                        # demote to plain GeoTIFF | raise
+  # idCollisions: warn     # same item/subcollection id in two campaigns: warn keep first
+  #                        # owner | raise. Collection ids, and any collision inside one
+  #                        # campaign, always raise
 
-  # -- point statistics (opals) --
-  # nbThreads: null        # null = opals default = all CPU
-  # exactComputation: true # full scan: pc:statistics + real item datetime.
-  #                        # false = header only, fast, no statistics, datetime fall back to campaign date
+  # --- output / statistics
+  # assetHrefs: absolute   # relative = catalog travels with the data;
+  #                        # thumbnail href is always relative
+  # minPoints: 1000        # drop point-cloud items below this pc:count
+  # nbThreads: null        # opals threads, null = opals default = all CPUs
+  # exactComputation: true # full scan: pc:statistics + real item datetime. false = header
+  #                        # only, fast, no statistics, datetime falls back to campaign date
 
-  # -- debug --
-  # dryRun: false          # discover + gate only, report counts, write nothing
-  # validate: false        # STAC-validate after save; needs pystac[validation]
-
-  # -- root metadata. license AND providers both set = root promoted Catalog -> Collection --
+  # --- root metadata, license AND providers both set promote the root Catalog to a Collection
   # license: null          # SPDX id, or "other"
-  # licenseLink: null      # rel=license link; "other" without link = spec grumble
+  # licenseLink: null      # rel=license link; "other" without one = spec grumble
   # providers: null        # STAC list form:
   #   - name: TU Wien, Department of Geodesy and Geoinformation
   #     roles: [processor, host]
   #     url: https://www.tuwien.at/mg/geo
-  #                        # or short name-keyed form:
-  #   TU Wien, Department of Geodesy and Geoinformation:
-  #     roles: [processor, host]
-  #     url: https://www.tuwien.at/mg/geo
+
+  # --- debug ---
+  # dryRun: false          # discover + gate only, report counts, write nothing
+  # validate: false        # STAC-validate after save; needs pystac[validation]
 
 
-# --- pre-scripts --- arent called automatically, just convenient to have
-tile_and_convert_pcl:      # python -m stac.pre.tac_pcl  -- LAZ -> laz tiles -> COPC
-  # infile: null           # LAZ file(s) and/or dir(s), list allowed
-  # outdir: null           # single input: exact dir. multiple: one subdir per input
-  # tileSize: 500          # tile edge in map units
-  # pointOrigin: null      # tile grid origin, e.g. "529000;5340000"; null = derive from data
-  # buffer: 0              # tile overlap in map units; keep 0 while mergeBelow live, else merged
-  #                        # tile carry duplicate points
-  # mergeBelow: 100.0      # tile under this size (MB) glued into neighbour tile; 0 disable
-  # tileSize_odm: 20.0     # inner tile size for opalsImport, unrelated to output tiling
-  # nbThreads: null        # null = opals default = all CPU
-  # distribute: null       # opals distribution factor
-  # tmp_path: ./tmp        # scratch dir for ODM + intermediate tiles
-  # keepodm: true          # keep ODM after run; false = re-import next run
-  # keeptmp: false         # keep whole tmp dir
+# =============================================================================
+#  PRE-SCRIPTS - not called by the catalog build, just convenient to keep here
+# =============================================================================
 
-tac_raster:                # python -m stac.pre.tac_raster  -- GeoTIFF -> COG (tiling possible)
-  # infile: null           # GeoTIFF file(s) and/or dir(s), multiple allowed
-  # outdir: null           # COG-only input: file lands inside. tiled input: one subdir per input
-  # minTileSize: null      # GB on disk that trigger tiling; null = plain COG for all inputs
-  # tileSize: 16384        # tile edge in pixel, tiling path only
-  # skipIfExists: true     # existing output not touched; false = redo everything
-  # compress: DEFLATE      # COG compression, e.g. DEFLATE | LZW | ZSTD | NONE
-  # blockSize: 512         # COG internal block edge in pixel
-  # overviews: AUTO        # COG overview build mode
-  # numThreads: ALL_CPUS   # GDAL NUM_THREADS
-  # bigTiff: IF_SAFER      # BIGTIFF mode
+tile_and_convert_pcl:
+  # infile: null
+  # outdir: null
+  # nbThreads: null
+  # distribute: null
+  # tileSize_odm: 20.0
+  # tmp_path: ./tmp
+  # pointOrigin: null
+  # tileSize: 500
+  # keepodm: true
+  # buffer: 0
+  # keeptmp: false
+  # mergeBelow: 100.0
+
+tac_raster:
+  # infile: null
+  # outdir: null
+  # minTileSize: null
+  # tileSize: 16384
+  # skipIfExists: true
+  # compress: DEFLATE
+  # blockSize: 512
+  # overviews: AUTO
+  # numThreads: ALL_CPUS
+  # bigTiff: IF_SAFER

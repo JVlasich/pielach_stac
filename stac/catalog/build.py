@@ -30,11 +30,14 @@ def campaign_date(name: str) -> date:
 
 
 def resolve_pc_datetime(gps_min, gps_max, campaign: date) -> tuple[datetime, datetime] | None:
-    """Raw GPSTime min/max -> (start, end) UTC. Above one week = adjusted standard GPS
-    time (seconds since GPS epoch minus 1e9, absolute); else weekseconds, resolved
-    against the GPS week of the campaign date.
-    Returns None for absent or degenerate GPSTime, caller falls back to campaign date.
-    Leap seconds ignored, ~18 s error irrelevant for catalog datetimes."""
+    """Raw GPSTime min/max -> (start, end) UTC.
+    Above one week = adjusted standard GPS time (seconds since GPS epoch minus 1e9);
+    else weekseconds, resolved against GPS week of the campaign date.
+    
+    returns:
+      datetime tuple | None for absent or degenerate GPSTime -> caller falls back to campaign date.
+    """
+    # Leap seconds ignored, ~18 s error irrelevant for catalog datetimes.
     if gps_min is None or gps_max is None or gps_min == gps_max or gps_min < 0:
         return None
     if gps_max > _WEEK:  # adjusted standard
@@ -124,27 +127,23 @@ def _pc_encoding(href: str) -> str:
     return low.rsplit(".", 1)[-1]  # laz | las
 
 
-# statistics.count stays out: extract derives it from the mask band's mean, so a float
-# reports an estimate honestly while an integer would claim a count never taken
-# (the 1.1 Statistics Object does allow the key)
+# statistics.count stays out: extract derives it from the mask band's mean
 _STAT_KEYS = ("minimum", "maximum", "mean", "stddev", "valid_percent")
 
-# what a band is, never what it measures: these identify a band and are never hoisted
+# what a band is, never what it measures: these identify a band and are never attached
 _BAND_IDENTITY = {"name", "eo:common_name"}
 
-# pystac 1.14.3 predates the unified bands array and reports eo/raster at v1.1.0, so the
-# URIs of the versions that define the fields written below cannot come from get_schema_uri()
+# pystac 1.14.3 doesnt fully support the new unified bands array
+# and the extension versions needed -> hardcode the uri's
 _EO_V2 = "https://stac-extensions.github.io/eo/v2.0.0/schema.json"
 _RASTER_V2 = "https://stac-extensions.github.io/raster/v2.0.0/schema.json"
 
 
 @extension("bands")
 def _populate_bands(item, pa, meta, fm) -> None:
-    """STAC 1.1 unified bands on the asset. Values equal across all bands hoist to the asset
-    and the bands inherit them; everything but identity hoists, so a single band without
-    identity leaves no bands array - an asset with one band is that band. The prefixed keys
-    actually written decide which extensions get declared - both v2.0.0 schemas reject a
-    declaration without one."""
+    """STAC 1.1 unified bands on the asset.
+    Values equal across all bands attached to the asset and the bands inherit them;
+    everything but identity attaches, an asset with one band is that band."""
     multi = len(meta.raster_bands) > 1
     if meta.raster_bands:
         unknown = set(meta.raster_bands[0]["statistics"]) - set(_STAT_KEYS) - {"count"}
@@ -174,7 +173,7 @@ def _populate_bands(item, pa, meta, fm) -> None:
         })
         bands.append({k: v for k, v in band.items() if v is not None})
 
-    # hoisted in declared band order, not set order: key order must not vary between runs
+    # attached in declared band order, not set order: key order must not vary between runs
     shared = [k for k in (bands[0] if bands else ()) if k not in _BAND_IDENTITY
               and all(k in b and b[k] == bands[0][k] for b in bands[1:])]
     for key in shared:
@@ -186,7 +185,7 @@ def _populate_bands(item, pa, meta, fm) -> None:
                        ("raster:spatial_resolution", meta.raster_spatial_resolution)):
         if value is not None:
             pa.extra_fields[key] = value
-    if any(bands):  # all empty = single band, fully hoisted
+    if any(bands):  # all empty = single band, attached fully 
         pa.extra_fields["bands"] = bands
 
     written = set(pa.extra_fields) | {k for b in bands for k in b}
@@ -198,9 +197,9 @@ def _populate_bands(item, pa, meta, fm) -> None:
 
 @extension("histogram")
 def _populate_histogram(item, pa, meta, fm) -> None:
-    """Height models only, and those are single-band, so _populate_bands has hoisted every field
-    onto the asset and left no bands array to carry this - the asset is the band. v2.0.0 allows
-    the field on an asset for exactly that reading."""
+    """Height models only, single-banded, so _populate_bands has attached every field
+    onto the asset and left no bands array to carry this.
+    v2.0.0 allows the field on an asset for exactly that reading."""
     if len(meta.raster_bands) != 1:
         return
     hist = meta.raster_bands[0].get("histogram")
@@ -232,9 +231,11 @@ def _round_coords(v):
 
 
 def _item_title(product, campaign: date) -> str:
-    """Short human title for browse UIs. Tile coords when tiled, else asset label + date.
-    The registry label separates variants the coarse category collapses (dtm_filled vs
-    dtm_masked vs dtm). Sidecar properties (byId title) override this."""
+    """Short human title for browse UIs.
+    Tile coords when tiled, else asset label + date.
+    The registry label separates variants the coarse category collapses
+    (dtm_filled vs dtm_masked vs dtm). Sidecar properties (byId title) override this.
+    """
     if product.group:  # tiled: id tail carries the tile coords (…_easting_northing)
         tail = product.id.split("_")[-2:]
         if len(tail) == 2 and all(t.isdigit() for t in tail):
@@ -332,7 +333,7 @@ def build_item(product, campaign: date, *, created: datetime | None = None,
 
 
 # curated collection summaries: sets for categorical, ranges for numeric.
-# created/updated (run noise), wkt2 (bloat) and datetime (extent) stay out.
+# created/updated (run noise), wkt2 (bloat) and datetime (extent) excluded.
 _SUMMARY_SETS = ("proj:code", "platform", "instruments", "pc:encoding")
 _SUMMARY_RANGES = ("gsd", "pc:count", "pc:density")
 

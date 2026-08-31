@@ -97,7 +97,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],               # STAC asset.roles array
         "media_type": "application/vnd.laszip+copc",
         "extensions": ["pointcloud", "projection", "file"],  # drives reader gating + populators
-        "thumbnail":  True,
+        "thumbnail":  "pointcloud",           # renderer: rgb | hillshade | pointcloud; None = no thumbnail
     },
     "pointcloud": {
         "category":   "pointcloud",
@@ -105,7 +105,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "application/vnd.laszip",
         "extensions": ["pointcloud", "projection", "file"],
-        "thumbnail":  False,
+        "thumbnail":  None,
     },
     "pointcloud_las": {
         "category":   "pointcloud",
@@ -113,7 +113,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "application/vnd.las",
         "extensions": ["pointcloud", "projection", "file"],
-        "thumbnail":  False,
+        "thumbnail":  None,
     },
 
     # orthophoto: RGB orthomosaic, primary deliverable -> data + visual; eo comes off color interp
@@ -123,7 +123,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data", "visual"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["bands", "projection", "file"],
-        "thumbnail":  True,
+        "thumbnail":  "rgb",
     },
 
     # DTM (terrain) variants -> category "dtm"
@@ -133,7 +133,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["bands", "projection", "file", "histogram"],
-        "thumbnail":  True,
+        "thumbnail":  "hillshade",
     },
     "dtm_filled": {
         "category":   "dtm",
@@ -141,7 +141,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["bands", "projection", "file", "histogram"],
-        "thumbnail":  True,
+        "thumbnail":  "hillshade",
     },
     "dtm_masked": {
         "category":   "dtm",
@@ -149,7 +149,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["bands", "projection", "file", "histogram"],
-        "thumbnail":  True,
+        "thumbnail":  "hillshade",
     },
 
     # DSM (surface) variants -> category "dsm"
@@ -159,7 +159,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["bands", "projection", "file", "histogram"],
-        "thumbnail":  True,
+        "thumbnail":  "hillshade",
     },
     "dsm_filled": {
         "category":   "dsm",
@@ -167,7 +167,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["bands", "projection", "file", "histogram"],
-        "thumbnail":  True,
+        "thumbnail":  "hillshade",
     },
     "dsm_masked": {
         "category":   "dsm",
@@ -175,7 +175,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": ["data"],
         "media_type": "image/tiff; application=geotiff",
         "extensions": ["bands", "projection", "file", "histogram"],
-        "thumbnail":  True,
+        "thumbnail":  "hillshade",
     },
 
     # category "ignore" = discover matches then drops silently (derived viz, not a product)
@@ -185,7 +185,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": [],
         "media_type": "image/tiff; application=geotiff",
         "extensions": [],
-        "thumbnail":  False,
+        "thumbnail":  None,
     },
     "log": {
         "category":   "ignore",
@@ -193,7 +193,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "stac_roles": [],
         "media_type": "",
         "extensions": [],
-        "thumbnail":  False,
+        "thumbnail":  None,
     },
 }
 
@@ -210,9 +210,10 @@ _LABEL_DEFAULTS: dict[str, Any] = {
     "stac_roles": [],
     "media_type": "",
     "extensions": [],
-    "thumbnail":  False,
+    "thumbnail":  None,
 }
 _LABEL_KEYS = tuple(_LABEL_DEFAULTS)
+_THUMB_KINDS = ("rgb", "hillshade", "pointcloud")  # render_thumbnail dispatch
 
 
 def merge_overrides(patterns, labels):
@@ -245,6 +246,14 @@ def _validate(stem_patterns, labels) -> None:
         unknown = [k for k in value if k not in _LABEL_KEYS]
         if unknown:  # a typo would otherwise backfill an all-empty label and drop the files silently
             raise ValueError(f"label {key!r}: unknown keys {unknown}, known: {list(_LABEL_KEYS)}")
+        thumb = value.get("thumbnail")
+        if thumb is True:  # flag used to be a bool, the renderer kind now lives here
+            raise ValueError(f"label {key!r}: thumbnail: use 'hillshade', 'rgb', or 'pointcloud', not true")
+        if thumb is False:
+            value["thumbnail"] = thumb = None
+        if not (thumb is None or thumb in _THUMB_KINDS):  # a typo would render as rgb, silently
+            raise ValueError(f"label {key!r}: thumbnail {thumb!r} is not a renderer kind, "
+                             f"use one of {list(_THUMB_KINDS)} or null")
         missing = [k for k in _LABEL_KEYS if k not in value]
         if not missing:
             continue

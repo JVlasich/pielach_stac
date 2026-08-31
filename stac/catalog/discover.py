@@ -43,7 +43,7 @@ class Asset:
     media_type: str
     extensions: list   # which @populators run
     cloud_native: bool
-    thumbnail: bool = False  # registry label flag, drives thumbnail render (raster only)
+    thumbnail: str | None = None  # registry renderer kind: rgb | hillshade | pointcloud
     sidecars: list = field(default_factory=list)  # Paths matched by full basename
     file_meta: object = None  # extract.FileMeta, attached by manager's gate when it hashed
 
@@ -113,11 +113,12 @@ def match(filename, stem_patterns=STEM_PATTERNS) -> str | None:
 # --- cloud-native probe ---
 
 def _probe_cloud_native(path: Path, kind: str, ext: str, invalid_cog: str = "demote") -> bool:
-    """Pointcloud: ext == .copc.laz.
-    Raster: GDAL reports LAYOUT=COG for COG-structured files, filename ignored. Detected
-    ones also run the full COG validator; a structural error follows invalid_cog:
-    warn = keep cloud-native | demote = plain GeoTIFF (then the non_cloud_native policy
-    decides) | raise. Unreadable rasters warn and count as non-cloud-native."""
+    """Checks if a file is cloud native
+
+    Pointcloud: ext == .copc.laz.
+    Raster: GDAL reports LAYOUT=COG for COG-structured files, filename ignored.
+            Also validates COG and routes through policy on error
+    """
     if kind == "pcl":
         return ext == ".copc.laz"
     if kind != "raster":
@@ -153,10 +154,8 @@ def _item_id(name: str, ext: str) -> str:
 
 
 def _twin_key(m: "_Match"):
-    """Twins are the files that would produce the same item id: only the cog/copc marker
-    differs (dtm.tif vs dtm_cog.tif; x.laz vs x.copc.laz -- .copc is part of the matched
-    ext). Keyed on the id itself, so two names whose tokens are a permutation of each
-    other stay separate."""
+    """Twins are the files that would produce the same item id: only the cog/copc marker differs
+    Keyed on the id itself, so two names whose tokens are a permutation of each other stay separate."""
     return (m.path.parent, m.category, _item_id(m.path.name, m.ext).lower())
 
 
@@ -180,16 +179,18 @@ _EXT_RANK = {".copc.laz": 2, ".laz": 1, ".las": 0}
 
 
 def _resolve_twins(matches: list["_Match"], policy: str) -> list["_Match"]:
-    """One deterministic winner per twin bucket, pcl and raster at once. Precedence:
+    """One deterministic winner per twin, pcl and raster at once. Precedence:
         1) cloud_native (pcl & raster)
         2) "cog" in name (raster)
         3) format rank .copc.laz > .laz > .las (pcl)
-    Non-cloud-native winner goes through the non_cloud_native policy:
-    warn = catalog + warning | skip = drop | raise.
 
-    matches ; as built in discover()
-    policy ; 'warn' | 'skip' | 'raise'
-    Returns: kept matches"""
+    args:
+      matches   - as built in discover()
+      policy    - warn | skip | raise ; for non-cn winners
+    
+    returns:
+      list of kept matches
+    """
     buckets: dict = {}
     for m in matches:
         buckets.setdefault(_twin_key(m), []).append(m)
@@ -218,8 +219,7 @@ def _resolve_twins(matches: list["_Match"], policy: str) -> list["_Match"]:
 
 def _assign_tile_groups(products: list, root: Path) -> None:
     """Tiled = more than one product of a category sharing a subdir below the campaign
-    root (tac_pcl writes all tiles of one cloud into one dir). The subdir names the
-    subcollection; files at the root stay flat. Only place this policy lives."""
+    root. Subdir names the subcollection; files at the root stay flat"""
     buckets: dict = {}
     for p in products:
         parent = p.assets[0].path.parent
@@ -270,14 +270,16 @@ def discover(folder: str | Path, policy: RunPolicy = RunPolicy(), *,
     """Products under a campaign folder: walk, apply policies, assign .group (pcl tiles).
     Pass merge_overrides() output for per-campaign overrides.
 
-    folder ; the folder to walk
-    policy ; RunPolicy for this run. Read here: unknown_assets (unclassifiable files)
-             and non_cloud_native (files without a cloud-native twin)
-    stem_patterns ; stem-patterns to look for
-    labels ; the labels those patterns point to
-    id_prefix ; prefix for files without ISO token, keeps ids unique
-    exclude ; sidecar globs vs each file name (case-insensitive); matches dropped
-    Returns: list of Products
+    args:
+      stem_patterns - stem-patterns to look for
+      folder    - the folder to walk
+      policy    - RunPolicy for this run. unknown_assets & non_cloud_native
+      labels    - the labels those patterns point to
+      id_prefix - prefix for files without ISO token, keeps ids unique
+      exclude   - sidecar globs vs each file name (case-insensitive); matches dropped
+
+    returns:
+      list of Products
     """
     sp = stem_patterns if stem_patterns is not None else STEM_PATTERNS
     lb = labels if labels is not None else LABELS
@@ -348,6 +350,7 @@ def discover(folder: str | Path, policy: RunPolicy = RunPolicy(), *,
 
     _assign_tile_groups(products, folder)
     log.debug(f"{len(files)} files -> {len(products)} products in {folder}")
+    
     return products
 
 

@@ -17,3 +17,6 @@ Then replace the contents of this folder (keep this README) with `dist/`,
 dropping the `*.map` source maps (~15 MB dev-only weight).
 `catalogUrl` assumes the catalog lives at `<served root>/catalog/catalog.json`,
 `pathPrefix` assumes this folder is served at `/browser/`.
+
+Upstream is ISC-licensed; the notice travels with this copy in `LICENSE` next to
+this file, as that license requires.

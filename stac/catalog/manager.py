@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import chain
 from pathlib import Path
@@ -20,7 +21,9 @@ from .discover import discover, qualify_id
 from .extract import file_meta, pcl_point_count
 from .hierarchy import resolve_hierarchy
 from .policy import RunPolicy
-from .thumbnail import render_collection_thumbnail, render_thumbnail
+from .thumbnail import (
+    CollThumbJob, ItemThumbJob, render_collection_thumbnail, render_thumbnail
+    )
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +46,24 @@ CATALOG_DEFAULTS = {
 config.register_defaults("catalog", CATALOG_DEFAULTS)
 
 
+@dataclass(frozen=True)
+class CampaignResult:
+    """What one campaign produced: counts for the run report, thumbnail jobs for the
+    post-normalize drain in update_catalog()."""
+    rebuilt: int = 0
+    reused: int = 0
+    stale: int = 0
+    failed: int = 0
+    seconds: dict = field(default_factory=dict)
+    thumb_jobs: list = field(default_factory=list)        # list[ItemThumbJob]
+    coll_thumb_jobs: list = field(default_factory=list)   # list[CollThumbJob]
+
+    def counts(self) -> dict:
+        """JSON-safe counts block for last_run.json (jobs dropped)."""
+        return {"rebuilt": self.rebuilt, "reused": self.reused, "stale": self.stale,
+                "failed": self.failed, "seconds": self.seconds}
+
+
 def load_sidecar(path) -> dict:
     """Per-campaign sidecar YAML -> dict
     (collection / patterns / labels / hierarchy / properties blocks / crs fallback)."""
@@ -54,9 +75,8 @@ def load_sidecar(path) -> dict:
 
 def _register_id(seen: dict | None, new_id: str, kind: str, source: str, policy: str) -> None:
     """One id namespace per run (root/collections/subcollections/items).
-    Collision: warn keeps the first owner, raise fails the campaign. Collection ids
-    always raise: the second campaign replaces the first one's collection in the root,
-    so warn cannot keep the first owner - it merges two campaigns into one collection."""
+    Collision: warn keeps the first owner, raise fails the campaign.
+    Collection ids always raise"""
     if seen is None:
         return
     if new_id in seen:
@@ -87,10 +107,7 @@ _GATE_KEYS = ("patterns", "labels", "properties", "crs")
 
 
 def _sidecar_digest(sc: dict) -> str:
-    """sha256 over the sidecar keys that change item content. Raw values, before
-    merge_overrides normalizes its copies in place: the digest tracks the file, not code
-    behaviour. collection is collection-only; exclude and hierarchy already propagate,
-    since collections are rebuilt from scratch every run."""
+    """sha256 over the sidecar keys that change item content. Raw values"""
     payload = {k: sc.get(k) for k in _GATE_KEYS}
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
@@ -100,9 +117,10 @@ def _sidecar_digest(sc: dict) -> str:
 def _needs_rebuild(product, existing_item) -> bool:
     """Size shortcut, then sha256 confirm. A computed hash rides on the asset so
     build_item never hashes twice.
-    Gates the first asset only (products are single-asset today), and only the data
-    asset: a hand-deleted co-located thumbnail or sidecar leaves a dangling href until
-    the next --force run."""
+    """
+    # Gates the first asset only (products are single-asset today), and only the data
+    # asset: a hand-deleted co-located thumbnail or sidecar leaves a dangling href until
+    # the next --force run.
     a = product.assets[0]
     stored = _stored_file_fields(existing_item, a.label)
     if stored is None:
@@ -116,14 +134,12 @@ def _needs_rebuild(product, existing_item) -> bool:
 
 # --- per-campaign pipeline ---
 
-def _queue_coll_thumb(sub, node, rebuilt_ids: set, parent_of: dict, jobs: list) -> None:
-    """Queue one aggregate thumbnail for a tiled point-cloud subcollection.
+def _queue_coll_thumb(sub, node, rebuilt_ids: set, parent_of: dict) -> CollThumbJob | None:
+    """One aggregate thumbnail job for a tiled point-cloud subcollection, None if no member
+    carries a renderer kind.
 
-    Only point-cloud members carrying the registry thumbnail flag render, so plain LAS/LAZ
-    stays opt-in (a full read); partial cover warns. The job carries a changed flag - any
-    member rebuilt, or the member set moved - because collections are rebuilt every run
-    unconditionally and would otherwise re-render every campaign every time. The
-    PNG-exists half of the gate waits for the drain: hrefs are undefined until normalize."""
+    job carries a changed flag because collections are rebuilt every run
+    and would otherwise re-render every campaign every time."""
     pcl = [p for p in node.products if p.assets[0].kind == "pcl"]
     flagged = [p for p in pcl if p.assets[0].thumbnail]
     if not flagged:
@@ -131,43 +147,44 @@ def _queue_coll_thumb(sub, node, rebuilt_ids: set, parent_of: dict, jobs: list) 
     if len(flagged) < len(pcl):
         skipped = sorted(p.id for p in pcl if p not in flagged)
         log.warning(f"{sub.id} thumbnail covers {len(flagged)}/{len(pcl)} tiles, "
-                    f"no registry thumbnail flag on: {skipped}")
+                    f"no registry renderer kind on: {skipped}")
     # stale clones count as members: they sit in the collection, and comparing without
     # them would report a change every run for as long as one is kept
     ids = {i.id for i in sub.get_items()}
     was = {i for i, par in parent_of.items() if par == sub.id}
     changed = bool(rebuilt_ids & ids) or ids != was
-    jobs.append((sub, [p.assets[0].path for p in flagged], changed))
+    return CollThumbJob(coll=sub, src_paths=[p.assets[0].path for p in flagged], changed=changed)
 
 
-def process_campaign(
-    folder, root, policy: RunPolicy, *, # positional
-    seen_ids: dict | None = None,
-    thumb_jobs: list | None = None,
-    coll_thumb_jobs: list | None = None
-) -> dict:
-
+def process_campaign(folder, root, policy: RunPolicy, *, seen_ids: dict | None = None
+                     ) -> CampaignResult:
     """Build or refresh one campaign collection on the root catalog.
 
     An item build failure (unreadable CRS, reader error) drops only that item, the rest
     of the campaign still builds. A previously cataloged version of a failed item
     follows the stale policy.
 
-    folder ; path to the campaign folder
-    policy ; RunPolicy for this run
-    seen_ids ; {id: (kind, source)} from update_catalog(), mutated in place
-    Returns: {"rebuilt": n, "reused": n, "stale": n, "failed": n, "seconds": {...}}
-    Raises: missing campaign.yaml; item/subcollection id collision when
-    policy.id_collisions == "raise", collection id collision always
+    args:
+      folder    - path to the campaign folder
+      policy    - RunPolicy for this run
+      seen_ids  - {id: (kind, source)} from update_catalog(), mutated in place
+    returns:
+      CampaignResult (counts, timings, thumbnail jobs)
+    raises:
+      missing campaign.yaml; item/subcollection id collision when
+      policy.id_collisions == "raise", collection id collision always
     """
     folder = Path(folder)
     t_start = perf_counter()
     secs = {"discover": 0.0, "hash": 0.0, "build": 0.0}
+    thumb_jobs: list = []
+    coll_thumb_jobs: list = []
 
-    def _counts(rebuilt=0, reused=0, stale=0, failed=0) -> dict:
-        return {"rebuilt": rebuilt, "reused": reused, "stale": stale, "failed": failed,
-                "seconds": {**{k: round(v, 2) for k, v in secs.items()},
-                            "total": round(perf_counter() - t_start, 2)}}
+    def _result(rebuilt=0, reused=0, stale=0, failed=0) -> CampaignResult:
+        return CampaignResult(rebuilt=rebuilt, reused=reused, stale=stale, failed=failed,
+                              seconds={**{k: round(v, 2) for k, v in secs.items()},
+                                       "total": round(perf_counter() - t_start, 2)},
+                              thumb_jobs=thumb_jobs, coll_thumb_jobs=coll_thumb_jobs)
 
     try:
         sc = load_sidecar(folder / "campaign.yaml")
@@ -188,7 +205,7 @@ def process_campaign(
 
     if not products:
         log.warning(f"no products in {folder.name}, campaign {camp_id} untouched")
-        return _counts()
+        return _result()
 
     for p in products:
         _register_id(seen_ids, p.id, "item", folder.name, policy.id_collisions)
@@ -240,7 +257,7 @@ def process_campaign(
         products = kept
         if not products:
             log.warning(f"all products below minPoints in {folder.name}, campaign {camp_id} untouched")
-            return _counts()
+            return _result()
 
     rebuilt = reused = 0
     rebuilt_ids: set[str] = set()   # feeds the subcollection thumbnail gate below
@@ -269,12 +286,8 @@ def process_campaign(
             finally:
                 secs["build"] += perf_counter() - t
             a0 = p.assets[0]
-            if policy.thumbnails and thumb_jobs is not None and a0.thumbnail:
-                if a0.kind == "raster":
-                    kind = "rgb" if a0.category == "orthophoto" else "hillshade"
-                    thumb_jobs.append((p.item, a0.path, kind))
-                elif a0.kind == "pcl":
-                    thumb_jobs.append((p.item, a0.path, "pointcloud"))
+            if policy.thumbnails and a0.thumbnail:
+                thumb_jobs.append(ItemThumbJob(item=p.item, src_path=a0.path, kind=a0.thumbnail))
         rebuilt += 1
         rebuilt_ids.add(p.id)
 
@@ -282,7 +295,7 @@ def process_campaign(
         products = [p for p in products if p not in failed_items]
         if not products:
             log.warning(f"all items failed in {folder.name}, campaign {camp_id} untouched")
-            return _counts(reused=reused, failed=len(failed_items))
+            return _result(reused=reused, failed=len(failed_items))
 
     stale_ids = sorted(set(existing) - {p.id for p in products})
     for sid in stale_ids:
@@ -297,7 +310,7 @@ def process_campaign(
     log.info(f"{camp_id}: {rebuilt} rebuilt, {reused} reused, {len(stale_ids)} stale, "
              f"{len(failed_items)} failed")
     if policy.dry_run:
-        return _counts(*counts)
+        return _result(*counts)
 
     # kept-stale items stay exactly where they were: bucket clones by old parent id
     stale_clones: dict = {}
@@ -323,8 +336,10 @@ def process_campaign(
         items = [p.item for p in node.products] + stale_clones.pop(sub_id, [])
         sub = build_collection(sub_id, meta, items)
         children.append(sub)
-        if policy.thumbnails and coll_thumb_jobs is not None:
-            _queue_coll_thumb(sub, node, rebuilt_ids, parent_of, coll_thumb_jobs)
+        if policy.thumbnails:
+            job = _queue_coll_thumb(sub, node, rebuilt_ids, parent_of)
+            if job:
+                coll_thumb_jobs.append(job)
 
     flat_items = [p.item for p in nodes[0].products] + stale_clones.pop(camp_id, [])
 
@@ -340,7 +355,7 @@ def process_campaign(
     if old is not None:
         root.remove_child(camp_id)
     root.add_child(camp_coll)
-    return _counts(*counts)
+    return _result(*counts)
 
 
 # --- catalog loop ---
@@ -423,35 +438,35 @@ class _WarnCollector(logging.Handler):
 
 
 def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
-    """Re-run the whole catalog over a processed-datasets root (idempotent).
+    """Re-run the whole catalog over a processed-datasets root.
     Campaign dirs = direct subdirs with an ISO date token; failures are isolated.
 
     Collections with no campaign dir on disk follow the stale policy. The sweep acts
     only on clean runs: while any campaign failed its collection id is unknown, so
     flagged collections are kept with a warning regardless of policy.
 
-    root ; Path scanned for campaign subfolders
-    out_dir ; Path the finished catalog is written to
-    policy ; RunPolicy for this run, passed unchanged to every campaign
+    args:
+      root    - Path scanned for campaign subfolders
+      out_dir - Path the finished catalog is written to
+      policy  - RunPolicy for this run, passed unchanged to every campaign
 
-    Returns: {"ok": {campaign: counts}, "failed": {campaign: error},
-    "stale_collections": [ids], "validation": None | "ok" | error, "seconds": {...}};
-    also written to <out_dir>/last_run.json."""
+    returns:
+      {"ok": {campaign: counts}, "failed": {campaign: error},
+      "stale_collections": [ids], "validation": None | "ok" | error, "seconds": {...}};
+      also written to <out_dir>/last_run.json.
+    """
     root, out_dir = Path(root), Path(out_dir)
     t_start = perf_counter()
     cat = _load_or_create_root(out_dir)
 
     ok, failed, stale_colls, validation, fatal = {}, {}, [], None, None
+    results: dict = {}          # campaign -> CampaignResult, drained for thumbnail jobs below
     secs = {"thumbnails": 0.0, "save": 0.0}
     warns = _WarnCollector()
     root_logger = logging.getLogger()
     root_logger.addHandler(warns)
     try:
         seen_ids: dict = {cat.id: ("catalog", "root")}
-        # (item, src_path, kind) for rebuilt raster items, rendered after normalize
-        thumb_jobs: list = []
-        # (collection, [tile paths], changed) for tiled point-cloud subcollections
-        coll_thumb_jobs: list = []
         for d in sorted(root.iterdir()):
             if not d.is_dir() or d.resolve() == out_dir.resolve():
                 continue
@@ -465,9 +480,8 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
                 continue
             log.info(f"\033[96m=== {d.name} ===\033[00m")
             try:
-                ok[d.name] = process_campaign(
-                    d, cat, policy, seen_ids=seen_ids, thumb_jobs=thumb_jobs,
-                    coll_thumb_jobs=coll_thumb_jobs)
+                results[d.name] = process_campaign(d, cat, policy, seen_ids=seen_ids)
+                ok[d.name] = results[d.name].counts()
             except Exception as e:
                 log.exception(f"FAILED: {d.name}")
                 failed[d.name] = str(e)
@@ -502,25 +516,29 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
                 cat.set_self_href(str(out_dir / "catalog.json"))  # stable root entry point (not collection.json)
             if policy.thumbnails:
                 t = perf_counter()
+                # hrefs are only defined now, so every campaign's jobs drain here
+                item_jobs = [j for r in results.values() for j in r.thumb_jobs]
+                coll_jobs = [j for r in results.values() for j in r.coll_thumb_jobs]
                 # pcl thumbnails need laspy
                 pcl_ok = laspy_available()
-                if not pcl_ok and (coll_thumb_jobs
-                                   or any(k == "pointcloud" for *_, k in thumb_jobs)):
+                if not pcl_ok and (coll_jobs
+                                   or any(j.kind == "pointcloud" for j in item_jobs)):
                     log.warning("laspy/lazrs unavailable; skipping point-cloud thumbnails")
-                for item, src, kind in thumb_jobs:
-                    if kind == "pointcloud" and not pcl_ok:
+                for job in item_jobs:
+                    if job.kind == "pointcloud" and not pcl_ok:
                         continue
                     try:
-                        href = render_thumbnail(item, src, kind)
-                        item.add_asset("thumbnail", pystac.Asset(
+                        href = render_thumbnail(job.item, job.src_path, job.kind)
+                        job.item.add_asset("thumbnail", pystac.Asset(
                             href=href, media_type="image/png", roles=["thumbnail"]))
                     except Exception as e:
-                        log.warning(f"thumbnail failed for {item.id}: {e}")
-                for coll, srcs, changed in (coll_thumb_jobs if pcl_ok else []):
+                        log.warning(f"thumbnail failed for {job.item.id}: {e}")
+                for job in (coll_jobs if pcl_ok else []):
+                    coll = job.coll
                     png = Path(coll.get_self_href()).parent / f"{coll.id}_thumbnail.png"
                     try:
-                        if changed or policy.force or not png.exists():
-                            render_collection_thumbnail(coll, srcs)
+                        if job.changed or policy.force or not png.exists():
+                            render_collection_thumbnail(coll, job.src_paths)
                         # unlike items, collections are rebuilt from scratch every run and
                         # carry no assets forward: attach on the skip path too
                         coll.add_asset("thumbnail", pystac.Asset(
@@ -561,8 +579,7 @@ def update_catalog(root, out_dir, policy: RunPolicy) -> dict:
 
 def _write_report(res: dict, out_dir: Path, **knobs) -> None:
     """Machine-readable run report next to the catalog, overwritten each run (dry runs
-    included). Not a STAC object, but it belongs to the catalog it describes; written to
-    the working directory it forked into one copy per directory a run was started in."""
+    included). Not a STAC object, but it belongs to the catalog it describes"""
     report = {"timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"), **knobs, **res}
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "last_run.json"

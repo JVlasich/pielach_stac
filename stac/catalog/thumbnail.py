@@ -1,6 +1,7 @@
-"""Render a downscaled PNG thumbnail for a raster item (ortho RGB / DSM-DTM hillshade)."""
+"""Render thumbnails"""
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from osgeo import gdal
@@ -10,6 +11,22 @@ log = logging.getLogger(__name__)
 
 MAX_EDGE = 512  # longest thumbnail edge in px
 HS_EDGE = 1024  # render hillshade at this res, then downscale to MAX_EDGE
+
+
+@dataclass(frozen=True)
+class ItemThumbJob:
+    """One item thumbnail, queued during the campaign loop, rendered after normalize_hrefs."""
+    item: object       # pystac.Item
+    src_path: Path
+    kind: str          # rgb | hillshade | pointcloud
+
+
+@dataclass(frozen=True)
+class CollThumbJob:
+    """One aggregate subcollection thumbnail. changed = re-render, else only re-attach."""
+    coll: object       # pystac.Collection
+    src_paths: list    # list[Path], the flagged tiles
+    changed: bool
 
 
 def _data_window(band, sw: int, sh: int) -> list[int]:
@@ -36,9 +53,11 @@ def _data_window(band, sw: int, sh: int) -> list[int]:
 
 
 def _thumb_srs(item, file_srs):
-    """Source CRS for the warp. The raster file often carries none (CRS lives in the
-    sidecar), so the item's proj metadata wins; fall back to the file's own CRS.
-    None => caller skips the warp."""
+    """Source CRS for the warp
+    tries the item's proj:wkt2, then proj:code, then the file's own CRS.
+
+    returns:
+      str | none ; None makes caller skip the warp"""
     props = getattr(item, "properties", None) or {}
     return props.get("proj:wkt2") or props.get("proj:code") or (
         file_srs.ExportToWkt() if file_srs is not None else None)
@@ -51,9 +70,7 @@ def _fit(cw: int, ch: int, edge: int) -> tuple[int, int]:
 
 
 def _write_png(ds, out: Path) -> None:
-    """ds -> PNG (CreateCopy-only driver), longest edge capped at MAX_EDGE.
-    Averaged, not point-sampled: nearest throws most of a thin corridor away and
-    aliases the relief texture, undoing whatever was rendered at HS_EDGE."""
+    """Writes a dataset to PNG, capping the longest edge at MAX_EDGE"""
     ow, oh = ds.RasterXSize, ds.RasterYSize
     if max(ow, oh) > MAX_EDGE:
         s = MAX_EDGE / max(ow, oh)
@@ -68,31 +85,27 @@ def render_thumbnail(item, src_path, kind: str) -> str:
     kind: "rgb" (ortho band downscale) | "hillshade" (DSM/DTM height render)
           | "pointcloud" (COPC/LAZ top-down elevation colormap)
 
-    Raster thumbnails warp to EPSG:4326: STAC Browser overlays the PNG onto the 4326
-    bbox as plate-carrée, so native-CRS pixels would sit stretched/rotated off the
-    footprint. Source CRS comes from the item's proj metadata (the file may carry none)."""
+    Raster thumbnails warp to EPSG:4326; native-CRS pixels would sit stretched/rotated
+    Source CRS comes from the item's proj metadata (the file may carry none)."""
     src = str(src_path)
     out = Path(item.get_self_href()).parent / f"{item.id}_thumbnail.png"
     out.parent.mkdir(parents=True, exist_ok=True)  # save() has not created the item dir yet
 
     if kind == "pointcloud":
-        # same native-CRS overlay misalignment applies; deferred (would reproject x/y first)
-        return _render_pcl(src, out)  # GDAL cannot open point clouds, own path below
+        return _render_pcl(src, out) 
 
     ds = gdal.Open(src)
     sw, sh, nbands = ds.RasterXSize, ds.RasterYSize, ds.RasterCount
     has_alpha = nbands >= 4 and ds.GetRasterBand(4).GetColorInterpretation() == gdal.GCI_AlphaBand
-    file_srs = ds.GetSpatialRef()  # usually None; CRS lives in the item's proj metadata
+    file_srs = ds.GetSpatialRef()  # usually None
     win = _data_window(ds.GetRasterBand(1), sw, sh)  # crop nodata margin so thumb matches bbox
     ds = None
     cw, ch = win[2], win[3]
     if kind == "hillshade":
-        # hillshade is a 3x3 op: without computeEdges it drops every valid pixel touching a
-        # nodata edge, costing 6% of a compact DEM and 45% of a sparse one at any render size.
-        # computeEdges keeps all of them, so HS_EDGE only supersamples for anti-aliasing.
+        # without computeEdges drops every valid pixel touching a nodata edge
         w, h = _fit(cw, ch, HS_EDGE)
         small = gdal.Translate("", src, format="MEM", width=w, height=h, srcWin=win)
-        # zFactor=1 default, bump if gentle river relief looks flat
+        # zFactor=1 default, can adjust later
         rendered = gdal.DEMProcessing("", small, "hillshade", format="MEM",
                                       computeEdges=True)  # 1-band, nodata=0
     else:
@@ -104,9 +117,7 @@ def render_thumbnail(item, src_path, kind: str) -> str:
 
     srs_in = _thumb_srs(item, file_srs)
     if srs_in and item.bbox:
-        # warp to plate-carree and pin the extent to item.bbox: the PNG carries no georeference,
-        # STAC Browser overlays it onto that exact box with no reprojection.
-        # dstAlpha keeps the rotated margins transparent
+        # warp to plate-carree and pin the extent to item.bbox
         warp = {"srcSRS": srs_in, "dstSRS": "EPSG:4326", "resampleAlg": "bilinear",
                 "outputBounds": item.bbox, "outputBoundsSRS": "EPSG:4326"}
         if not has_alpha:
@@ -123,10 +134,12 @@ COARSE_N = int(4e5)  # decimation target for plain (non-COPC) laz/las
 
 
 def _coarse_xyz(src: str, resolution: float | None = None):
-    """(x, y, z) arrays, coarsely sampled. COPC reads shallow octree levels, plain laz/las strides.
-
-    resolution: COPC query resolution in CRS units; None = one octree node per pixel of this
-    file's own thumbnail. An aggregate over several files passes its shared, coarser value."""
+    """(x, y, z) arrays, coarsely sampled.
+    COPC reads shallow octree levels; plain LAZ/LAS itterates chunks (full read)
+    
+    returns:
+      tuple of ndarrays (x,y,z)
+    """
     import laspy
     import numpy as np
     if src.endswith(".copc.laz"):
@@ -137,10 +150,8 @@ def _coarse_xyz(src: str, resolution: float | None = None):
                 resolution = span / MAX_EDGE  # ~one octree node per thumbnail pixel
             pts = r.query(resolution=resolution)
         return np.asarray(pts.x), np.asarray(pts.y), np.asarray(pts.z)
-    # plain LAZ/LAS has no spatial index (COPC is the fast norm); stride chunks, bounded memory.
-    # base() is xy_returns_channel and carries no Z, hence the explicit decompress_z; the whole
     # selection is ignored for LAS < 1.4 / point format < 6.
-    sel = laspy.DecompressionSelection.base().decompress_z()
+    sel = laspy.DecompressionSelection.base().decompress_z() # base is xy only so explicit z
     with laspy.open(src, decompression_selection=sel) as f:
         step = max(1, f.header.point_count // COARSE_N)
         xs, ys, zs = [], [], []
@@ -193,19 +204,18 @@ def render_collection_thumbnail(coll, src_paths) -> str:
 
     One image for a whole tiled point-cloud subcollection: every tile queried at the
     collection-wide resolution, binned into one grid over their union extent, so all tiles
-    share one color ramp. Cells no tile covers stay transparent, which is what makes the
-    tile layout readable. Unreadable tiles warn and are dropped; none left raises."""
+    share one color ramp"""
     import laspy
     import numpy as np
 
     out = Path(coll.get_self_href()).parent / f"{coll.id}_thumbnail.png"
-    out.parent.mkdir(parents=True, exist_ok=True)  # save() has not created the collection dir yet
+    out.parent.mkdir(parents=True, exist_ok=True)
 
     srcs, mins, maxs = [], [], []
     for p in src_paths:
         s = str(p)
         try:
-            with laspy.open(s) as f:  # header only, nothing decompressed
+            with laspy.open(s) as f:  # header only
                 mins.append(f.header.mins)
                 maxs.append(f.header.maxs)
                 srcs.append((s, f.header.point_count))
