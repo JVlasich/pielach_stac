@@ -31,5 +31,5 @@ last_run.json
 
 !sample_configs/**/*.yaml
 !config.yaml
-!stac/catalog
+!turnstac/catalog
 !README.md

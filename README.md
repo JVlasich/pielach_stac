@@ -1,4 +1,4 @@
-# Pielach STAC
+# Pielach STAC (turnstac)
 
 Automated, idempotent pipeline that turns the processed topo-bathymetric LiDAR
 time series of the Pielach river into a standards-compliant static
@@ -7,13 +7,13 @@ Department of Geodesy and Geoinformation.
 
 ## Deployment layout
 
-The repo folder is meant to live inside the processed-datasets root
-(`12_PROCESSED_DATASETS`). Each campaign is one ISO-dated folder next to it,
+The repo folder is meant to live inside the processed-datasets root.
+Each campaign is one ISO-dated folder next to it,
 holding the products plus a per-campaign `campaign.yaml` sidecar
 (template: `sample_configs/sample_campaign.yaml`):
 
 ```
-12_PROCESSED_DATASETS/
+data-root/
 ├── 2023-02-08/              # campaign: <date>-named folder
 │   ├── campaign.yaml        # per-campaign metadata + overrides
 │   ├── *_dtm_*.tif ...      # products (COG / COPC preferred)
@@ -40,6 +40,7 @@ holding the products plus a per-campaign `campaign.yaml` sidecar
 - **`update_catalog.bat`** — double-click to build/refresh the catalog into
   `<data root>\catalog`. Re-running is safe and cheap: an item is rebuilt only
   when its file changed (size shortcut, then sha256).
+  Passes `"%REPO%\config.yaml"` if it exists
 - **`view_catalog.bat`** — serves data root + bundled STAC Browser and opens
   `http://localhost:8111/browser/`.
 
@@ -47,7 +48,7 @@ holding the products plus a per-campaign `campaign.yaml` sidecar
 
 ```
 python -m stac <root> [--config config.yaml] [options]
-python -m stac --init <path>     # write a commented config template
+python -m stac --init <path>
 ```
 
 Key options (CLI > YAML config > defaults):
@@ -85,3 +86,12 @@ writes one template covering every namespace (see `sample_configs/sample_config.
 env\Scripts\python -m pytest tests
 ```
 requires `pytest`
+
+## License
+
+Apache License 2.0, see `LICENSE`.
+
+The vendored [stac-browser](https://github.com/radiantearth/stac-browser) build in
+`browser/` is third-party code under its own ISC license, see `browser/LICENSE`.
+The pure-Python dependencies vendored in `libs/` each keep their upstream license
+in their `.dist-info` folder.
