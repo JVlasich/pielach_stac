@@ -3,7 +3,7 @@ import pytest
 
 opals = pytest.importorskip("opals")  # tac_pcl imports opals at module load
 
-from stac.pre.tac_pcl import group_tiles
+from turnstac.pre.tac_pcl import group_tiles
 
 
 def test_no_threshold_keeps_all_tiles():

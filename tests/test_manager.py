@@ -5,8 +5,8 @@ from pathlib import Path
 import pystac
 import pytest
 
-from stac.catalog.manager import update_catalog
-from stac.catalog.policy import RunPolicy
+from turnstac.catalog.manager import update_catalog
+from turnstac.catalog.policy import RunPolicy
 
 
 def _counts(res: dict, camp: str) -> dict:
@@ -164,8 +164,8 @@ def test_tiny_pcl_tiles_dropped(tmp_path, monkeypatch):
     # pcl reads need opals/laspy; mock discover/build_item/pcl_point_count to exercise the filter
     from datetime import datetime, timezone
 
-    import stac.catalog.manager as mgr
-    from stac.catalog.discover import Asset, Product
+    import turnstac.catalog.manager as mgr
+    from turnstac.catalog.discover import Asset, Product
 
     camp = tmp_path / "2024-10-09"
     (camp / "tiles").mkdir(parents=True)
@@ -210,7 +210,7 @@ def test_tiny_pcl_tiles_dropped(tmp_path, monkeypatch):
 
 
 def test_root_promoted_to_collection(tmp_path, write_tif, monkeypatch):
-    from stac.core import config
+    from turnstac.core import config
     orig = config.section
     base = orig("catalog")
     monkeypatch.setattr(config, "section", lambda ns: (
@@ -393,9 +393,9 @@ def test_tiled_pcl_subcollection_thumbnail(tmp_path, write_las, monkeypatch):
     re-rendered only when a member changes, re-attached on every run."""
     from datetime import datetime, timezone
 
-    import stac.catalog.manager as mgr
-    from stac.catalog.discover import Asset, Product
-    from stac.catalog.extract import file_meta
+    import turnstac.catalog.manager as mgr
+    from turnstac.catalog.discover import Asset, Product
+    from turnstac.catalog.extract import file_meta
 
     camp = tmp_path / "2024-10-09"
     tiles = camp / "pielach_2024-10-09_tiles"

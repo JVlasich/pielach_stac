@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from stac.catalog.build import (_EO_V2, _GPS_EPOCH, _RASTER_V2, build_collection,
+from turnstac.catalog.build import (_EO_V2, _GPS_EPOCH, _RASTER_V2, build_collection,
                                 build_item, campaign_date, resolve_pc_datetime)
-from stac.catalog.discover import discover
+from turnstac.catalog.discover import discover
 
 CAMP = date(2023, 2, 8)
 
@@ -291,7 +291,7 @@ def test_build_item_pointcloud(tmp_path, write_las):
 
 def test_build_item_pointcloud_copc_encoding(tmp_path, write_las):
     # laspy has no COPC writer, so index a real .laz tile with the shipped tool
-    binary = Path(__file__).resolve().parents[1] / "stac" / "bin" / "lascopcindex64"
+    binary = Path(__file__).resolve().parents[1] / "turnstac" / "bin" / "lascopcindex64"
     if not binary.exists():
         pytest.skip("lascopcindex64 not shipped for this platform")
     src = tmp_path / "pielach_2023-02-08_ground.laz"

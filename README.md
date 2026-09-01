@@ -47,8 +47,8 @@ data-root/
 ## CLI
 
 ```
-python -m stac <root> [--config config.yaml] [options]
-python -m stac --init <path>
+python -m turnstac <root> [--config config.yaml] [options]
+python -m turnstac --init <path>
 ```
 
 Key options (CLI > YAML config > defaults):
@@ -73,11 +73,11 @@ Each run writes a machine-readable report to `<out>/last_run.json`.
 
 | Tool | Purpose |
 | --- | --- |
-| `python -m stac.pre.tac_pcl` | tile a LAZ with OPALS and convert tiles to COPC |
-| `python -m stac.pre.tac_raster` | convert GeoTIFF to COG, tiling above a size threshold |
-| `python -m stac.pre.c_copc` | convert LAZ to COPC without tiling |
+| `python -m turnstac.pre.tac_pcl` | tile a LAZ with OPALS and convert tiles to COPC |
+| `python -m turnstac.pre.tac_raster` | convert GeoTIFF to COG, tiling above a size threshold |
+| `python -m turnstac.pre.c_copc` | convert LAZ to COPC without tiling |
 
-All share the `--config` / `--init` pattern; `python -m stac.utils.gen_full_template`
+All share the `--config` / `--init` pattern; `python -m turnstac.utils.gen_full_template`
 writes one template covering every namespace (see `sample_configs/sample_config.yaml`).
 
 ## Tests
@@ -89,9 +89,15 @@ requires `pytest`
 
 ## License
 
-Apache License 2.0, see `LICENSE`.
+MIT License, see `LICENSE`.
 
 The vendored [stac-browser](https://github.com/radiantearth/stac-browser) build in
 `browser/` is third-party code under its own ISC license, see `browser/LICENSE`.
 The pure-Python dependencies vendored in `libs/` each keep their upstream license
 in their `.dist-info` folder.
+
+The `lascopcindex64` binaries in `turnstac/bin/` are
+[LAStools](https://github.com/LAStools/LAStools) version 260326 by rapidlasso GmbH,
+redistributed under the LGPL 2.1. See `turnstac/bin/NOTICE-LAStools.txt` and
+`turnstac/bin/COPYING-LAStools.LGPL21.txt`. They are run as a separate process,
+not linked.

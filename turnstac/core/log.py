@@ -1,7 +1,7 @@
 """Project-wide logging.
 
-Entrypoints call setup() once; every module takes its own logger via
-logging.getLogger(__name__) and logs — no handlers, no levels.
+Entrypoints call setup() once;
+every module takes its own logger via logging.getLogger(__name__)
 OPALS modules derive their log levels from the root logger via opals_log().
 """
 

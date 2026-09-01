@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 @functools.lru_cache(maxsize=1)
 def _gdal():
     """(gdal, COG validator or None), imported on the first raster probe. Kept out of
-    module scope so importing stac.catalog does not require GDAL."""
+    module scope so importing turnstac.catalog does not require GDAL."""
     from osgeo import gdal
     gdal.UseExceptions()
     try:  # optional, (pip install gdal-utils on GDAL < 3.2)
@@ -376,4 +376,4 @@ if __name__ == "__main__":
     if args:
         _report(discover(Path(args[0])))
     else:
-        log.info("usage: python -m stac.catalog.discover <folder>")
+        log.info("usage: python -m turnstac.catalog.discover <folder>")

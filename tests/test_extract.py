@@ -4,7 +4,7 @@ import struct
 import pytest
 from osgeo import gdal, osr
 
-from stac.catalog.extract import raster
+from turnstac.catalog.extract import raster
 
 
 def _interior_rings(geom: dict) -> int:
@@ -45,7 +45,7 @@ def test_srs_from_wkt_and_sidecar_keep_easting_first(tmp_path, write_tif, write_
     import numpy as np
     from laspy.vlrs.known import WktCoordinateSystemVlr
 
-    from stac.catalog.extract import pointcloud
+    from turnstac.catalog.extract import pointcloud
 
     # the file's own CRS: GDAL hands this one over easting-first already
     write_tif(tmp_path / "georef.tif", 10)

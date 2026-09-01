@@ -1,9 +1,4 @@
-"""Catalog update entrypoint (mirrors pre-tools): --config/--init/--dryRun, summary.
-
-Usage:
-    python -m stac.core.cli <root> [--out dir] [--stale warn|remove|raise] [--dryRun]
-    python -m stac.core.cli --init [config.yaml]
-"""
+"""Catalog update entrypoint"""
 
 import argparse
 import logging

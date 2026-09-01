@@ -1,0 +1,24 @@
+Third-party binaries in this directory
+======================================
+
+  lascopcindex64       (Linux)
+  lascopcindex64.exe   (Windows)
+
+These files are not part of turnstac.
+
+  Tool:      lascopcindex, from LAStools
+  Version:   260326
+  Copyright: (c) rapidlasso GmbH, info@rapidlasso.de
+  License:   GNU Lesser General Public License, version 2.1
+             full text in COPYING-LAStools.LGPL21.txt
+  Source:    https://github.com/LAStools/LAStools
+
+lascopcindex belongs to the open-source part of LAStools, which rapidlasso
+distributes under the LGPL 2.1 (see LICENSE.txt and COPYING.txt in the
+LAStools repository). The complete corresponding source code is available
+from the repository above; for the sources of exactly this build, contact
+the maintainer of this repository.
+
+turnstac runs the binary as a separate process and does not link against it.
+The LGPL therefore covers these two files only, not the MIT licensed
+turnstac code.

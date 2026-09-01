@@ -1,6 +1,6 @@
 import pytest
 
-from stac.core.registry import LABELS, STEM_PATTERNS, merge_overrides
+from turnstac.core.registry import LABELS, STEM_PATTERNS, merge_overrides
 
 FULL_LABEL = {"category": "pointcloud", "kind": "pcl", "stac_roles": ["data"],
               "media_type": "application/vnd.laszip+copc",

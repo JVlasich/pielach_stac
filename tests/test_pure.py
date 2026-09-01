@@ -17,7 +17,7 @@ import pytest
 def test_merge_overrides_does_not_mutate_globals(monkeypatch):
     """Injects a key-incomplete built-in so the shallow-copy aliasing actually bites:
     RED on `dict(STEM_PATTERNS)`, GREEN after the per-entry copy."""
-    from stac.core import registry
+    from turnstac.core import registry
     monkeypatch.setitem(registry.STEM_PATTERNS, "tmp", {"require": ["x"]})
     registry.merge_overrides(None, None)
     assert "extensions" not in registry.STEM_PATTERNS["tmp"]
@@ -27,7 +27,7 @@ def test_merge_overrides_does_not_mutate_globals(monkeypatch):
 
 def _discover():
     pytest.importorskip("osgeo.gdal")
-    from stac.catalog import discover
+    from turnstac.catalog import discover
     return discover
 
 
@@ -43,7 +43,7 @@ def test_match_specificity_and_forbid():
 
 def test_match_extension_specificity():
     d = _discover()
-    from stac.core.registry import STEM_PATTERNS
+    from turnstac.core.registry import STEM_PATTERNS
     assert d.match("cloud.copc.laz") == "pointcloud_copc"   # .copc.laz beats .laz
     assert d.match("cloud.laz") == "pointcloud"
     label, _pat, ext = d._best_match("cloud.copc.laz", STEM_PATTERNS)
@@ -79,7 +79,7 @@ def test_item_id_strips_cog_marker():
 # --- config: defaults < file < cli precedence ---
 
 def test_config_precedence(tmp_path):
-    from stac.core import config
+    from turnstac.core import config
     config.register_defaults("t_prec", {"a": 1, "b": 2, "c": 3})
     assert config.section("t_prec") == {"a": 1, "b": 2, "c": 3}
 

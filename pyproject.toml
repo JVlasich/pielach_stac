@@ -1,28 +1,34 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "turnstac"
 version = "1.0.0"
 description = "Idempotent static STAC 1.1 catalog pipeline for the Pielach topo-bathymetric LiDAR time series"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "JVlasich", email = "jules.vlasich@geo.tuwien.ac.at" }]
 # GDAL and OPALS come from the environment (OSGeo / opals install), not pip
 dependencies = [
     "pystac>=1.10",
     "pyyaml",
 ]
 
+[project.urls]
+Homepage = "https://github.com/JVlasich/pielach_stac"
+
 [project.optional-dependencies]
 validation = ["pystac[validation]"]
 dev = ["pytest"]
 
 [project.scripts]
-turnstac = "stac.core.cli:main"
-turnstac-pre-raster = "stac.pre.tac_raster:main"
-turnstac-pre-pcl = "stac.pre.tac_pcl:main"
-turnstac-pre-copc = "stac.pre.c_copc:main"
-turnstac-template = "stac.utils.gen_full_template:main"
+turnstac = "turnstac.core.cli:main"
+turnstac-pre-raster = "turnstac.pre.tac_raster:main"
+turnstac-pre-pcl = "turnstac.pre.tac_pcl:main"
+turnstac-pre-copc = "turnstac.pre.c_copc:main"
+turnstac-template = "turnstac.utils.gen_full_template:main"
 
 [tool.setuptools.packages.find]
-include = ["stac*"]
+include = ["turnstac*"]

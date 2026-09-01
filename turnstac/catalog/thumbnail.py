@@ -248,7 +248,7 @@ def render_collection_thumbnail(coll, src_paths) -> str:
 
 
 if __name__ == "__main__":
-    # self-check: python -m stac.catalog.thumbnail <src> [<src> ...] [<dest dir>]
+    # self-check: python -m turnstac.catalog.thumbnail <src> [<src> ...] [<dest dir>]
     # several sources render one aggregate collection thumbnail instead
     import sys
     from types import SimpleNamespace

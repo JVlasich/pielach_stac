@@ -4,8 +4,8 @@ import logging
 import pytest
 from osgeo import gdal
 
-from stac.catalog.discover import COG_MEDIA_TYPE, _ISO_DATE, discover
-from stac.catalog.policy import RunPolicy
+from turnstac.catalog.discover import COG_MEDIA_TYPE, _ISO_DATE, discover
+from turnstac.catalog.policy import RunPolicy
 
 gdal.UseExceptions()
 

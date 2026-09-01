@@ -29,7 +29,7 @@ rem harvest the opalsShell environment (PATH, PYTHONPATH, GDAL_DATA, PROJ_LIB)
 rem "rem" argument skips the interactive shell -> returns control here
 call "%OPALS_ROOT%\opalsShell.bat" rem
 
-rem put repo code on PYTHONPATH; vendored deps in libs\ are added by stac\__init__.py
+rem put repo code on PYTHONPATH; vendored deps in libs\ are added by turnstac\__init__.py
 set "PYTHONPATH=%REPO%;%PYTHONPATH%"
 
 rem optional config.yaml in the repo root
@@ -37,7 +37,7 @@ set "CFG_ARG="
 if exist "%REPO%\config.yaml" set CFG_ARG=--config "%REPO%\config.yaml"
 
 echo Updating catalog for %DATA_ROOT% ...
-python -m stac.core.cli "%DATA_ROOT%" %CFG_ARG% 2>&1
+python -m turnstac.core.cli "%DATA_ROOT%" %CFG_ARG% 2>&1
 if errorlevel 1 (
     echo BUILD FAILED
     pause

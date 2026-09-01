@@ -4,7 +4,7 @@ from pathlib import Path
 
 from osgeo import gdal
 
-from stac.catalog.thumbnail import render_collection_thumbnail, render_thumbnail, MAX_EDGE
+from turnstac.catalog.thumbnail import render_collection_thumbnail, render_thumbnail, MAX_EDGE
 
 gdal.UseExceptions()
 
@@ -249,7 +249,7 @@ def test_collection_thumbnail_copc(tmp_path, write_las):
     import subprocess
 
     import pytest
-    binary = Path(__file__).resolve().parents[1] / "stac" / "bin" / "lascopcindex64"
+    binary = Path(__file__).resolve().parents[1] / "turnstac" / "bin" / "lascopcindex64"
     if not binary.exists():
         pytest.skip("lascopcindex64 not shipped for this platform")
 

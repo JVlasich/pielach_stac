@@ -33,3 +33,6 @@ last_run.json
 !config.yaml
 !turnstac/catalog
 !README.md
+!libs/**/LICENSE*
+!turnstac/bin/COPYING-LAStools.LGPL21.txt
+!turnstac/bin/NOTICE-LAStools.txt

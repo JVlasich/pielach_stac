@@ -2,7 +2,7 @@
 
 import pytest
 
-from stac.catalog.policy import RunPolicy
+from turnstac.catalog.policy import RunPolicy
 
 
 def test_config_defaults_round_trip():

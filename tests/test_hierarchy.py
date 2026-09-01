@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from stac.catalog.hierarchy import resolve_hierarchy
+from turnstac.catalog.hierarchy import resolve_hierarchy
 
 
 def _p(pid, group=None):
