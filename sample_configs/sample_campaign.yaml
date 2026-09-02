@@ -81,6 +81,11 @@ properties:
 #   placement:                 # item id -> group name, or ~ to force the item flat
 #     pielach_2024-10-09_tile_017: pielach_2024-10-09_tiles
 #     pielach_2024-10-09_overview: ~
+#     "*_tile_*": pielach_2024-10-09_tiles    # a key holding * ? [ is an fnmatch pattern,
+#                                             # matched case-insensitively against the item id.
+#                                             # Quote it: a bare * opens a YAML alias.
+#                                             # exact key > pattern > automatic rule; among
+#                                             # patterns the first one in this file wins.
 #   groups:                    # metadata for the subcollection; providers and keywords
 #     pielach_2024-10-09_tiles:                        # are inherited
 #       title: Point cloud tiles 2024-10-09

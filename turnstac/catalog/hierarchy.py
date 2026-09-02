@@ -6,12 +6,21 @@ then applies the sidecar hierarchy block:
   placement: {product_id: group_name | ~}   pin into a group / force flat
   groups:    {group_name: {title, description}}   subcollection metadata
 no pystac import.
+
+A placement key may be an fnmatch pattern ('*?[') instead of a literal id; it is matched
+case-insensitively against the same qualified product id a literal key uses. Precedence is
+exact key > pattern > auto tile group, and among patterns the first one in sidecar file
+order wins. 'groups' keys stay literal, they are output names not selectors.
+A pattern key must be quoted in YAML, '*' opens an alias and '*_tile_*: tiles' is a parse error.
 """
 
 import logging
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 
 log = logging.getLogger(__name__)
+
+WILDCARDS = "*?["
 
 
 @dataclass
@@ -26,6 +35,14 @@ class Node:
         return f"Node {target}  ({len(self.products)} products)"
 
 
+def _is_pattern(key: str) -> bool:
+    return any(c in key for c in WILDCARDS)
+
+
+def _pattern_hits(pid: str, patterns: list) -> list:
+    return [k for k in patterns if fnmatch(pid.lower(), k.lower())]
+
+
 def resolve_hierarchy(products, hier: dict | None = None) -> list[Node]:
     """Products + sidecar hierarchy block -> [flat Node, *group Nodes].
     Flat node always first. placement wins over product.group; a group named only
@@ -33,15 +50,34 @@ def resolve_hierarchy(products, hier: dict | None = None) -> list[Node]:
     hier = hier or {}
     placement = hier.get("placement") or {}
     groups_meta = hier.get("groups") or {}
-
-    known = {p.id for p in products}
-    for pid in sorted(set(placement) - known):
-        log.warning(f"hierarchy placement for unknown product id: {pid}")
+    patterns = [k for k in placement if _is_pattern(k)]
 
     buckets: dict = {}
+    used: set = set()
+    warned: set = set()
     for p in products:
-        g = placement.get(p.id, p.group)  # explicit null in placement = force flat
+        # hits are collected even when an exact key wins: a shadowed pattern is not a typo
+        hits = _pattern_hits(p.id, patterns)
+        used.update(hits)
+        if p.id in placement:
+            used.add(p.id)
+            g = placement[p.id]
+        elif hits:
+            if len(hits) > 1 and tuple(hits) not in warned:  # once per overlap, not per product
+                warned.add(tuple(hits))
+                log.warning(f"placement patterns {hits} overlap, first wins: {hits[0]!r} "
+                            f"(first hit: {p.id})")
+            g = placement[hits[0]]
+            log.debug(f"placement pattern {hits[0]!r} puts {p.id} into {g or '<flat>'}")
+        else:
+            g = p.group
         buckets.setdefault(g, []).append(p)
+
+    for key in sorted(set(placement) - used):
+        if _is_pattern(key):
+            log.warning(f"hierarchy placement pattern matched no products: {key}")
+        else:
+            log.warning(f"hierarchy placement for unknown product id: {key}")
 
     nodes = [Node(None, products=buckets.pop(None, []))]
     for name in sorted(buckets):

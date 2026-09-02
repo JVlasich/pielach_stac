@@ -309,6 +309,11 @@ def process_campaign(folder, root, policy: RunPolicy, *, seen_ids: dict | None =
     counts = (rebuilt, reused, len(stale_ids), len(failed_items))
     log.info(f"{camp_id}: {rebuilt} rebuilt, {reused} reused, {len(stale_ids)} stale, "
              f"{len(failed_items)} failed")
+    # resolved before the dry-run exit: --dryRun --loglevel debug is the sidecar edit-check loop
+    nodes = resolve_hierarchy(products, sc.get("hierarchy"))
+    for node in nodes:
+        log.debug(f"{node}: {', '.join(p.id for p in node.products)}")
+
     if policy.dry_run:
         return _result(*counts)
 
@@ -318,7 +323,6 @@ def process_campaign(folder, root, policy: RunPolicy, *, seen_ids: dict | None =
         for sid in stale_ids:
             stale_clones.setdefault(parent_of[sid], []).append(existing[sid].clone())
 
-    nodes = resolve_hierarchy(products, sc.get("hierarchy"))
     children = []
     for node in nodes[1:]:
         if not node.products:
@@ -328,9 +332,17 @@ def process_campaign(folder, root, policy: RunPolicy, *, seen_ids: dict | None =
         sub_id = qualify_id(node.name, camp_id)
         _register_id(seen_ids, sub_id, "subcollection", folder.name, policy.id_collisions)
         cat = node.products[0].category
+        cats = {p.category for p in node.products}
+        if len(cats) > 1:  # a placement pattern can pin several categories into one group
+            if not node.title:
+                log.warning(f"group {node.name} mixes categories {sorted(cats)}, "
+                            f"set hierarchy.groups.{node.name}.title to name it")
+            title, desc = node.name, f"Grouped products for campaign {camp_id}."
+        else:
+            title, desc = f"{cat} tiles", f"Tiled {cat} for campaign {camp_id}."
         camp_meta = sc.get("collection") or {}  # tiles inherit the campaign's attribution
-        meta = {"title": node.title or f"{cat} tiles",
-                "description": node.description or f"Tiled {cat} for campaign {camp_id}.",
+        meta = {"title": node.title or title,
+                "description": node.description or desc,
                 "providers": camp_meta.get("providers"),
                 "keywords": camp_meta.get("keywords")}
         items = [p.item for p in node.products] + stale_clones.pop(sub_id, [])
